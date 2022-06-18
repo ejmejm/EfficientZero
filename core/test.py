@@ -23,7 +23,10 @@ def _test(config, shared_storage):
         if counter >= config.training_steps + config.last_steps:
             time.sleep(30)
             break
+        print('Counter stuff:', counter, config.test_interval * episodes)
+        time.sleep(5)
         if counter >= config.test_interval * episodes:
+            print('STARTING TEST')
             episodes += 1
             test_model.set_weights(ray.get(shared_storage.get_weights.remote()))
             test_model.eval()

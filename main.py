@@ -16,7 +16,7 @@ if __name__ == '__main__':
     parser.add_argument('--env', required=True, help='Name of the environment')
     parser.add_argument('--result_dir', default=os.path.join(os.getcwd(), 'results'),
                         help="Directory Path to store results (default: %(default)s)")
-    parser.add_argument('--case', required=True, choices=['atari'],
+    parser.add_argument('--case', required=True, choices=['atari', 'atari_debug', 'atari_fast'],
                         help="It's used for switching between different domains(default: %(default)s)")
     parser.add_argument('--opr', required=True, choices=['train', 'test'])
     parser.add_argument('--amp_type', required=True, choices=['torch_amp', 'none'],
@@ -72,6 +72,10 @@ if __name__ == '__main__':
     # import corresponding configuration , neural networks and envs
     if args.case == 'atari':
         from config.atari import game_config
+    elif args.case == 'atari_debug':
+        from config.atari_debug import game_config
+    elif args.case == 'atari_fast':
+        from config.atari_fast import game_config
     else:
         raise Exception('Invalid --case option')
 
@@ -92,9 +96,11 @@ if __name__ == '__main__':
                 model_path = args.model_path
             else:
                 model_path = None
+            print('Starting training...')
             model, weights = train(game_config, summary_writer, model_path)
             model.set_weights(weights)
             total_steps = game_config.training_steps + game_config.last_steps
+            print('Starting testing...')
             test_score, test_path = test(game_config, model.to(device), total_steps, game_config.test_episodes,
                                          device, render=False, save_video=args.save_video, final_test=True, use_pb=True)
             mean_score = test_score.mean()
@@ -122,6 +128,7 @@ if __name__ == '__main__':
 
             model = game_config.get_uniform_network().to(device)
             model.load_state_dict(torch.load(model_path, map_location=torch.device(device)))
+            print('Starting testing...')
             test_score, test_path = test(game_config, model, 0, args.test_episodes, device=device, render=args.render,
                                          save_video=args.save_video, final_test=True, use_pb=True)
             mean_score = test_score.mean()

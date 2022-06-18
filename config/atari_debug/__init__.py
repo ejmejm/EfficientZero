@@ -7,26 +7,26 @@ from .env_wrapper import AtariWrapper
 from .model import EfficientZeroNet
 
 
-class AtariConfig(BaseConfig):
+class AtariDebugConfig(BaseConfig):
     def __init__(self):
-        super(AtariConfig, self).__init__(
-            training_steps=100000, # TODO: Modify this to get faster training for quick experiments
-            last_steps=20000,
-            test_interval=10000,
-            log_interval=100,
+        super(AtariDebugConfig, self).__init__(
+            training_steps=500,
+            last_steps=100,
+            test_interval=50,
+            log_interval=50,
             vis_interval=1000,
-            test_episodes=32,
+            test_episodes=1,
             checkpoint_interval=100,
-            target_model_interval=200,
-            save_ckpt_interval=10000,
-            max_moves=108000,
-            test_max_moves=12000,
+            target_model_interval=50,
+            save_ckpt_interval=100, # 10000,
+            max_moves=5000,
+            test_max_moves=5000,
             history_length=400,
             discount=0.997,
             dirichlet_alpha=0.3,
             value_delta_max=0.01,
-            num_simulations=50,
-            batch_size=256,
+            num_simulations=25,
+            batch_size=128,
             td_steps=5,
             num_actors=1,
             # network initialization/ & normalization
@@ -40,11 +40,11 @@ class AtariConfig(BaseConfig):
             lr_warm_up=0.01,
             lr_init=0.2,
             lr_decay_rate=0.1,
-            lr_decay_steps=100000,
+            lr_decay_steps=1000,
             auto_td_steps_ratio=0.3,
             # replay window
             start_transitions=8,
-            total_transitions=100 * 1000,
+            total_transitions=10_000,
             transition_num=1,
             # frame skip & stack observation
             frame_skip=4,
@@ -55,13 +55,13 @@ class AtariConfig(BaseConfig):
             policy_loss_coeff=1,
             consistency_coeff=2,
             # reward sum
-            lstm_hidden_size=512,
+            lstm_hidden_size=64,
             lstm_horizon_len=5,
             # siamese
-            proj_hid=1024,
-            proj_out=1024,
-            pred_hid=512,
-            pred_out=1024,)
+            proj_hid=128,
+            proj_out=128,
+            pred_hid=64,
+            pred_out=128,)
         self.discount **= self.frame_skip
         self.max_moves //= self.frame_skip
         self.test_max_moves //= self.frame_skip
@@ -166,4 +166,4 @@ class AtariConfig(BaseConfig):
         return self.transforms.transform(images)
 
 
-game_config = AtariConfig()
+game_config = AtariDebugConfig()

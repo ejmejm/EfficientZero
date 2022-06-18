@@ -102,6 +102,7 @@ class DataWorker(object):
         return priorities
 
     def run(self):
+        print('SELF-PLAY WORKER {} STARTED'.format(self.rank))
         # number of parallel mcts
         env_nums = self.config.p_mcts_num
         model = self.config.get_uniform_network()
@@ -110,6 +111,7 @@ class DataWorker(object):
 
         start_training = False
         envs = [self.config.new_game(self.config.seed + self.rank * i) for i in range(env_nums)]
+        print('{} ENVS CREATED'.format(env_nums))
 
         def _get_max_entropy(action_space):
             p = 1.0 / action_space
@@ -123,11 +125,12 @@ class DataWorker(object):
         with torch.no_grad():
             while True:
                 trained_steps = ray.get(self.storage.get_counter.remote())
+                print('TRAINED STEPS: {}'.format(trained_steps))
                 # training finished
                 if trained_steps >= self.config.training_steps + self.config.last_steps:
                     time.sleep(30)
                     break
-
+                
                 init_obses = [env.reset() for env in envs]
                 dones = np.array([False for _ in range(env_nums)])
                 game_histories = [GameHistory(envs[_].env.action_space, max_length=self.config.history_length,

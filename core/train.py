@@ -358,9 +358,15 @@ def _train(model, target_model, replay_buffer, shared_storage, batch_storage, co
         config.set_transforms()
 
     # wait until collecting enough data to start
+    print('Starting data collection')
+    i = 0
     while not (ray.get(replay_buffer.get_total_len.remote()) >= config.start_transitions):
+        if i % 60 == 0:
+            n_samples = ray.get(replay_buffer.get_total_len.remote())
+            print('{}/{} transitions collected'.format(n_samples, config.start_transitions))
         time.sleep(1)
-        pass
+        i += 1
+
     print('Begin training...')
     # set signals for other workers
     shared_storage.set_start_signal.remote()
@@ -406,6 +412,8 @@ def _train(model, target_model, replay_buffer, shared_storage, batch_storage, co
 
         if step_count % config.log_interval == 0:
             _log(config, step_count, log_data[0:3], model, replay_buffer, lr, shared_storage, summary_writer, vis_result)
+            n_samples = ray.get(replay_buffer.get_total_len.remote())
+            print('{}/{} transitions collected'.format(n_samples, config.start_transitions))
 
         # The queue is empty.
         if step_count >= 100 and step_count % 50 == 0 and batch_storage.get_len() == 0:
@@ -453,15 +461,19 @@ def train(config, summary_writer, model_path=None):
     workers = []
 
     # reanalyze workers
+    print('Creating reanalyze workers...')
     cpu_workers = [BatchWorker_CPU.remote(idx, replay_buffer, storage, batch_storage, mcts_storage, config) for idx in range(config.cpu_actor)]
     workers += [cpu_worker.run.remote() for cpu_worker in cpu_workers]
     gpu_workers = [BatchWorker_GPU.remote(idx, replay_buffer, storage, batch_storage, mcts_storage, config) for idx in range(config.gpu_actor)]
     workers += [gpu_worker.run.remote() for gpu_worker in gpu_workers]
 
     # self-play workers
+    print('Creating self-play workers...')
+    print(config.num_actors)
     data_workers = [DataWorker.remote(rank, replay_buffer, storage, config) for rank in range(0, config.num_actors)]
     workers += [worker.run.remote() for worker in data_workers]
     # test workers
+    print('Creating test workers...')
     workers += [_test.remote(config, storage)]
 
     # training loop
