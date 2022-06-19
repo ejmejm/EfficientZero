@@ -16,7 +16,7 @@ if __name__ == '__main__':
     parser.add_argument('--env', required=True, help='Name of the environment')
     parser.add_argument('--result_dir', default=os.path.join(os.getcwd(), 'results'),
                         help="Directory Path to store results (default: %(default)s)")
-    parser.add_argument('--case', required=True, choices=['atari', 'atari_debug', 'atari_fast'],
+    parser.add_argument('--case', required=True, choices=['atari', 'atari_debug', 'atari_fast', 'minigrid', 'minigrid_debug'],
                         help="It's used for switching between different domains(default: %(default)s)")
     parser.add_argument('--opr', required=True, choices=['train', 'test'])
     parser.add_argument('--amp_type', required=True, choices=['torch_amp', 'none'],
@@ -76,6 +76,10 @@ if __name__ == '__main__':
         from config.atari_debug import game_config
     elif args.case == 'atari_fast':
         from config.atari_fast import game_config
+    elif args.case == 'minigrid':
+        from config.minigrid import game_config
+    elif args.case == 'minigrid_debug':
+        from config.minigrid_debug import game_config
     else:
         raise Exception('Invalid --case option')
 

@@ -6,6 +6,8 @@ import random
 import shutil
 import logging
 
+import gym_minigrid
+from gym_minigrid.wrappers import RGBImgPartialObsWrapper, ImgObsWrapper
 import numpy as np
 
 from scipy.stats import entropy
@@ -236,6 +238,16 @@ def make_atari(env_id, skip=4, max_episode_steps=None):
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
     return env
 
+def make_minigrid(env_id, skip=1, max_episode_steps=None):
+    env = gym.make(env_id)
+    env = RGBImgPartialObsWrapper(env)
+    env = ImgObsWrapper(env)
+    env = MaxAndSkipEnv(env, skip=skip)
+    if max_episode_steps is not None:
+        env.unwrapped.max_steps = max_episode_steps
+    else:
+        env.unwrapped.max_steps = int(1e9)
+    return env
 
 def set_seed(seed):
     # set seed
