@@ -1,38 +1,32 @@
-# import os
-# import sys
-# sys.path.insert(1, os.path.join(sys.path[0], '../..'))
-# from env_wrapper import AtariWrapper
-# from model import EfficientZeroNet
-
 import torch
 
 from core.config import BaseConfig
-from core.utils import make_minigrid, WarpFrame
+from core.utils import make_atari, WarpFrame, EpisodicLifeEnv
 from core.dataset import Transforms
-from .env_wrapper import AtariWrapper
-from .model import EfficientZeroNet
+from .general.env_wrapper import AtariWrapper
+from .general.model import EfficientZeroNet
 
 
-class MinigridDebugConfig(BaseConfig):
+class AtariFastConfig(BaseConfig):
     def __init__(self):
-        super(MinigridDebugConfig, self).__init__(
-            training_steps=500,
-            last_steps=100,
-            test_interval=50,
-            log_interval=50,
-            vis_interval=500,
-            test_episodes=1,
-            checkpoint_interval=100,
-            target_model_interval=50,
-            save_ckpt_interval=100, # 10000,
-            max_moves=1000,
-            test_max_moves=1000,
+        super(AtariFastConfig, self).__init__(
+            training_steps=30_000,
+            last_steps=2000,
+            test_interval=1000,
+            log_interval=200,
+            vis_interval=1000,
+            test_episodes=3,
+            checkpoint_interval=1000,
+            target_model_interval=200,
+            save_ckpt_interval=1000,
+            max_moves=20_000,
+            test_max_moves=5000,
             history_length=400,
             discount=0.997,
             dirichlet_alpha=0.3,
             value_delta_max=0.01,
             num_simulations=10,
-            batch_size=128,
+            batch_size=256,
             td_steps=5,
             num_actors=1,
             # network initialization/ & normalization
@@ -46,28 +40,28 @@ class MinigridDebugConfig(BaseConfig):
             lr_warm_up=0.01,
             lr_init=0.2,
             lr_decay_rate=0.1,
-            lr_decay_steps=1000,
+            lr_decay_steps=20_000,
             auto_td_steps_ratio=0.3,
             # replay window
-            start_transitions=1,
-            total_transitions=10_000,
+            start_transitions=8,
+            total_transitions=100_000,
             transition_num=1,
             # frame skip & stack observation
-            frame_skip=1,
-            stacked_observations=1,
+            frame_skip=4,
+            stacked_observations=4,
             # coefficient
             reward_loss_coeff=1,
             value_loss_coeff=0.25,
             policy_loss_coeff=1,
             consistency_coeff=2,
             # reward sum
-            lstm_hidden_size=64,
+            lstm_hidden_size=128,
             lstm_horizon_len=5,
             # siamese
-            proj_hid=128,
-            proj_out=128,
-            pred_hid=64,
-            pred_out=128,)
+            proj_hid=256,
+            proj_out=256,
+            pred_hid=128,
+            pred_out=256,)
         self.discount **= self.frame_skip
         self.max_moves //= self.frame_skip
         self.test_max_moves //= self.frame_skip
@@ -78,6 +72,9 @@ class MinigridDebugConfig(BaseConfig):
         self.bn_mt = 0.1
         self.blocks = 1  # Number of blocks in the ResNet
         self.channels = 64  # Number of channels in the ResNet
+        self.repr_shape = (6, 6)
+        self.discretize_type = None
+
         if self.gray_scale:
             self.channels = 32
         self.reduced_channels_reward = 16  # x36 Number of channels in reward head
@@ -104,7 +101,7 @@ class MinigridDebugConfig(BaseConfig):
         # gray scale
         if self.gray_scale:
             self.image_channel = 1
-        obs_shape = (self.image_channel, 56, 56)
+        obs_shape = (self.image_channel, 96, 96)
         self.obs_shape = (obs_shape[0] * self.stacked_observations, obs_shape[1], obs_shape[2])
 
         game = self.new_game()
@@ -116,6 +113,7 @@ class MinigridDebugConfig(BaseConfig):
             self.action_space_size,
             self.blocks,
             self.channels,
+            self.repr_shape,
             self.reduced_channels_reward,
             self.reduced_channels_value,
             self.reduced_channels_policy,
@@ -134,13 +132,21 @@ class MinigridDebugConfig(BaseConfig):
             pred_hid=self.pred_hid,
             pred_out=self.pred_out,
             init_zero=self.init_zero,
-            state_norm=self.state_norm)
+            state_norm=self.state_norm,
+            discretize_type=self.discretize_type,)
 
     def new_game(self, seed=None, save_video=False, save_path=None, video_callable=None, uid=None, test=False, final_test=False):
         if test:
-            env = make_minigrid(self.env_name, skip=self.frame_skip, max_episode_steps=self.test_max_moves)
+            if final_test:
+                max_moves = 108000 // self.frame_skip
+            else:
+                max_moves = self.test_max_moves
+            env = make_atari(self.env_name, skip=self.frame_skip, max_episode_steps=max_moves)
         else:
-            env = make_minigrid(self.env_name, skip=self.frame_skip, max_episode_steps=self.max_moves)
+            env = make_atari(self.env_name, skip=self.frame_skip, max_episode_steps=self.max_moves)
+
+        if self.episode_life and not test:
+            env = EpisodicLifeEnv(env)
         env = WarpFrame(env, width=self.obs_shape[1], height=self.obs_shape[2], grayscale=self.gray_scale)
 
         if seed is not None:
@@ -165,6 +171,4 @@ class MinigridDebugConfig(BaseConfig):
         return self.transforms.transform(images)
 
 
-game_config = MinigridDebugConfig()
-# game_config.set_game('MiniGrid-MultiRoom-N2-S4-v0')
-# env = game_config.new_game()
+game_config = AtariFastConfig()

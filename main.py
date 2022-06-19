@@ -16,7 +16,7 @@ if __name__ == '__main__':
     parser.add_argument('--env', required=True, help='Name of the environment')
     parser.add_argument('--result_dir', default=os.path.join(os.getcwd(), 'results'),
                         help="Directory Path to store results (default: %(default)s)")
-    parser.add_argument('--case', required=True, choices=['atari', 'atari_debug', 'atari_fast', 'minigrid', 'minigrid_debug'],
+    parser.add_argument('--case', required=True,
                         help="It's used for switching between different domains(default: %(default)s)")
     parser.add_argument('--opr', required=True, choices=['train', 'test'])
     parser.add_argument('--amp_type', required=True, choices=['torch_amp', 'none'],
@@ -53,12 +53,18 @@ if __name__ == '__main__':
     parser.add_argument('--load_model', action='store_true', default=False, help='choose to load model')
     parser.add_argument('--model_path', type=str, default='./results/test_model.p', help='load model path')
     parser.add_argument('--object_store_memory', type=int, default=150 * 1024 * 1024 * 1024, help='object store memory')
+    parser.add_argument('--wandb', action='store_true', default=False, help='Use Wandb')
 
     # Process arguments
     args = parser.parse_args()
     args.device = 'cuda' if (not args.no_cuda) and torch.cuda.is_available() else 'cpu'
     assert args.revisit_policy_search_rate is None or 0 <= args.revisit_policy_search_rate <= 1, \
         ' Revisit policy search rate should be in [0,1]'
+
+    if args.wandb:
+        import wandb
+        wandb.init(project='EfficientZeroDiscrete', config=args,
+            group=args.case, sync_tensorboard=True)
 
     if args.opr == 'train':
         ray.init(num_gpus=args.num_gpus, num_cpus=args.num_cpus,
@@ -70,18 +76,11 @@ if __name__ == '__main__':
     set_seed(args.seed)
 
     # import corresponding configuration , neural networks and envs
-    if args.case == 'atari':
-        from config.atari import game_config
-    elif args.case == 'atari_debug':
-        from config.atari_debug import game_config
-    elif args.case == 'atari_fast':
-        from config.atari_fast import game_config
-    elif args.case == 'minigrid':
-        from config.minigrid import game_config
-    elif args.case == 'minigrid_debug':
-        from config.minigrid_debug import game_config
-    else:
-        raise Exception('Invalid --case option')
+    try:
+        game_config = None
+        exec(f'from config.{args.case} import game_config')
+    except ImportError:
+        raise ImportError(f'Config file for {args.case} is not found')
 
     # set config as per arguments
     exp_path = game_config.set_config(args)
@@ -146,3 +145,5 @@ if __name__ == '__main__':
         ray.shutdown()
     except Exception as e:
         logging.getLogger('root').error(e, exc_info=True)
+    if args.wandb:
+        wandb.finish()

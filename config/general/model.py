@@ -1,8 +1,12 @@
-import math
+# import os
+# import sys
+# sys.path.insert(1, os.path.join(sys.path[0], '../..'))
+
 import torch
 
 import numpy as np
 import torch.nn as nn
+from torch.nn import functional as F
 
 from core.model import BaseNet, renormalize
 
@@ -85,7 +89,7 @@ class ResidualBlock(nn.Module):
 
 # Downsample observations before representation network (See paper appendix Network Architecture)
 class DownSample(nn.Module):
-    def __init__(self, in_channels, out_channels, momentum=0.1):
+    def __init__(self, in_channels, out_channels, out_shape, momentum=0.1):
         super().__init__()
         self.conv1 = nn.Conv2d(
             in_channels,
@@ -115,7 +119,7 @@ class DownSample(nn.Module):
         self.resblocks3 = nn.ModuleList(
             [ResidualBlock(out_channels, out_channels, momentum=momentum) for _ in range(1)]
         )
-        self.pooling2 = nn.AvgPool2d(kernel_size=3, stride=2, padding=1)
+        self.pooling2 = nn.AdaptiveAvgPool2d(out_shape)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -140,8 +144,10 @@ class RepresentationNetwork(nn.Module):
         observation_shape,
         num_blocks,
         num_channels,
+        out_shape,
         downsample,
         momentum=0.1,
+        discretize_type=None,
     ):
         """Representation network
         Parameters
@@ -156,11 +162,13 @@ class RepresentationNetwork(nn.Module):
             True -> do downsampling for observations. (For board games, do not need)
         """
         super().__init__()
+        self.discretize_type = discretize_type
         self.downsample = downsample
         if self.downsample:
             self.downsample_net = DownSample(
                 observation_shape[0],
                 num_channels,
+                out_shape,
             )
         self.conv = conv3x3(
             observation_shape[0],
@@ -181,6 +189,10 @@ class RepresentationNetwork(nn.Module):
 
         for block in self.resblocks:
             x = block(x)
+        if self.discretize_type == 'gumbel':
+            x = F.gumbel_softmax(x, hard=True, dim=1)
+        elif self.discretize_type == 'vq':
+            raise NotImplementedError
         return x
 
     def get_param_mean(self):
@@ -189,7 +201,6 @@ class RepresentationNetwork(nn.Module):
             mean += np.abs(param.detach().cpu().numpy().reshape(-1)).tolist()
         mean = sum(mean) / len(mean)
         return mean
-
 
 # Predict next hidden states given current states and actions
 class DynamicsNetwork(nn.Module):
@@ -204,6 +215,7 @@ class DynamicsNetwork(nn.Module):
         lstm_hidden_size=64,
         momentum=0.1,
         init_zero=False,
+        discretize_type=None,
     ):
         """Dynamics network
         Parameters
@@ -226,7 +238,9 @@ class DynamicsNetwork(nn.Module):
         super().__init__()
         self.num_channels = num_channels
         self.lstm_hidden_size = lstm_hidden_size
+        self.discretize_type = discretize_type
 
+        self.conv1x1_repr = nn.Conv2d(num_channels, num_channels, 1)
         self.conv = conv3x3(num_channels, num_channels - 1)
         self.bn = nn.BatchNorm2d(num_channels - 1, momentum=momentum)
         self.resblocks = nn.ModuleList(
@@ -246,6 +260,7 @@ class DynamicsNetwork(nn.Module):
 
     def forward(self, x, reward_hidden):
         state = x[:,:-1,:,:]
+        x = self.conv1x1_repr(x)
         x = self.conv(x)
         x = self.bn(x)
 
@@ -255,6 +270,10 @@ class DynamicsNetwork(nn.Module):
         for block in self.resblocks:
             x = block(x)
         state = x
+        if self.discretize_type == 'gumbel':
+            state = F.gumbel_softmax(state, hard=True, dim=1)
+        elif self.discretize_type == 'vq':
+            raise NotImplementedError
 
         x = self.conv1x1_reward(x)
         x = self.bn_reward(x)
@@ -336,6 +355,7 @@ class PredictionNetwork(nn.Module):
             [ResidualBlock(num_channels, num_channels, momentum=momentum) for _ in range(num_blocks)]
         )
 
+        self.conv1x1_repr = nn.Conv2d(num_channels, num_channels, 1)
         self.conv1x1_value = nn.Conv2d(num_channels, reduced_channels_value, 1)
         self.conv1x1_policy = nn.Conv2d(num_channels, reduced_channels_policy, 1)
         self.bn_value = nn.BatchNorm2d(reduced_channels_value, momentum=momentum)
@@ -346,6 +366,7 @@ class PredictionNetwork(nn.Module):
         self.fc_policy = mlp(self.block_output_size_policy, fc_policy_layers, action_space_size, init_zero=init_zero, momentum=momentum)
 
     def forward(self, x):
+        x = self.conv1x1_repr(x)
         for block in self.resblocks:
             x = block(x)
         value = self.conv1x1_value(x)
@@ -370,6 +391,7 @@ class EfficientZeroNet(BaseNet):
         action_space_size,
         num_blocks,
         num_channels,
+        out_shape,
         reduced_channels_reward,
         reduced_channels_value,
         reduced_channels_policy,
@@ -388,7 +410,8 @@ class EfficientZeroNet(BaseNet):
         pred_hid=64,
         pred_out=256,
         init_zero=False,
-        state_norm=False
+        state_norm=False,
+        discretize_type=None,
     ):
         """EfficientZero network
         Parameters
@@ -449,42 +472,26 @@ class EfficientZeroNet(BaseNet):
         self.state_norm = state_norm
 
         self.action_space_size = action_space_size
-        block_output_size_reward = (
-            (
-                reduced_channels_reward
-                * math.ceil(observation_shape[1] / 16)
-                * math.ceil(observation_shape[2] / 16)
-            )
+        block_output_size_reward = (np.prod([reduced_channels_reward, *out_shape])
             if downsample
-            else (reduced_channels_reward * observation_shape[1] * observation_shape[2])
-        )
+            else (reduced_channels_reward * observation_shape[1] * observation_shape[2]))
 
-        block_output_size_value = (
-            (
-                reduced_channels_value
-                * math.ceil(observation_shape[1] / 16)
-                * math.ceil(observation_shape[2] / 16)
-            )
+        block_output_size_value = (np.prod([reduced_channels_value, *out_shape])
             if downsample
-            else (reduced_channels_value * observation_shape[1] * observation_shape[2])
-        )
+            else (reduced_channels_value * observation_shape[1] * observation_shape[2]))
 
-        block_output_size_policy = (
-            (
-                reduced_channels_policy
-                * math.ceil(observation_shape[1] / 16)
-                * math.ceil(observation_shape[2] / 16)
-            )
+        block_output_size_policy = (np.prod([reduced_channels_policy, *out_shape])
             if downsample
-            else (reduced_channels_policy * observation_shape[1] * observation_shape[2])
-        )
+            else (reduced_channels_policy * observation_shape[1] * observation_shape[2]))
 
         self.representation_network = RepresentationNetwork(
             observation_shape,
             num_blocks,
             num_channels,
+            out_shape,
             downsample,
             momentum=bn_mt,
+            discretize_type=discretize_type,
         )
 
         self.dynamics_network = DynamicsNetwork(
@@ -497,6 +504,7 @@ class EfficientZeroNet(BaseNet):
             lstm_hidden_size=lstm_hidden_size,
             momentum=bn_mt,
             init_zero=self.init_zero,
+            discretize_type=discretize_type,
         )
 
         self.prediction_network = PredictionNetwork(
@@ -515,10 +523,10 @@ class EfficientZeroNet(BaseNet):
         )
 
         # projection
-        in_dim = num_channels * math.ceil(observation_shape[1] / 16) * math.ceil(observation_shape[2] / 16)
-        self.porjection_in_dim = in_dim
+        in_dim = np.prod([num_channels, *out_shape])
+        self.projection_in_dim = in_dim
         self.projection = nn.Sequential(
-            nn.Linear(self.porjection_in_dim, self.proj_hid),
+            nn.Linear(self.projection_in_dim, self.proj_hid),
             nn.BatchNorm1d(self.proj_hid),
             nn.ReLU(),
             nn.Linear(self.proj_hid, self.proj_hid),
@@ -581,7 +589,7 @@ class EfficientZeroNet(BaseNet):
 
     def project(self, hidden_state, with_grad=True):
         # only the branch of proj + pred can share the gradients
-        hidden_state = hidden_state.view(-1, self.porjection_in_dim)
+        hidden_state = hidden_state.view(-1, self.projection_in_dim)
         proj = self.projection(hidden_state)
 
         # with grad, use proj_head
@@ -591,3 +599,22 @@ class EfficientZeroNet(BaseNet):
         else:
             return proj.detach()
 
+#------------------------------------------------------------------------------------
+
+# Testing
+if __name__ == '__main__':
+    rn = RepresentationNetwork(
+            observation_shape = (3, 84, 84),
+            num_blocks = 1,
+            num_channels = 64,
+            out_shape = (6, 6),
+            downsample = True,
+            momentum = 0.1,
+            discretize_type = 'gumbel')
+    print(rn)
+    print('# Params:', sum(p.numel() for p in rn.parameters()))
+    out = rn(torch.randn(10, 3, 84, 84))
+    print(out.shape)
+    print(out[0])
+
+#------------------------------------------------------------------------------------
