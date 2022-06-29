@@ -148,6 +148,7 @@ class RepresentationNetwork(nn.Module):
         downsample,
         momentum=0.1,
         discretize_type=None,
+        repr_channels=None,
     ):
         """Representation network
         Parameters
@@ -178,6 +179,8 @@ class RepresentationNetwork(nn.Module):
         self.resblocks = nn.ModuleList(
             [ResidualBlock(num_channels, num_channels, momentum=momentum) for _ in range(num_blocks)]
         )
+        repr_channels = repr_channels or num_channels
+        self.repr_conv = conv3x3(num_channels, repr_channels)
 
     def forward(self, x):
         if self.downsample:
@@ -189,6 +192,7 @@ class RepresentationNetwork(nn.Module):
 
         for block in self.resblocks:
             x = block(x)
+        x = self.repr_conv(x)
         if self.discretize_type == 'gumbel':
             x = F.gumbel_softmax(x, hard=True, dim=1)
         elif self.discretize_type == 'vq':
@@ -216,6 +220,7 @@ class DynamicsNetwork(nn.Module):
         momentum=0.1,
         init_zero=False,
         discretize_type=None,
+        repr_channels=None,
     ):
         """Dynamics network
         Parameters
@@ -240,9 +245,12 @@ class DynamicsNetwork(nn.Module):
         self.lstm_hidden_size = lstm_hidden_size
         self.discretize_type = discretize_type
 
-        self.conv1x1_repr = nn.Conv2d(num_channels, num_channels, 1)
+        repr_channels = repr_channels or num_channels
+        self.conv1x1_repr = nn.Conv2d(repr_channels, num_channels, 1)
         self.conv = conv3x3(num_channels, num_channels - 1)
         self.bn = nn.BatchNorm2d(num_channels - 1, momentum=momentum)
+        self.repr_conv = conv3x3(num_channels - 1, repr_channels - 1)
+
         self.resblocks = nn.ModuleList(
             [ResidualBlock(num_channels - 1, num_channels - 1, momentum=momentum) for _ in range(num_blocks)]
         )
@@ -263,13 +271,12 @@ class DynamicsNetwork(nn.Module):
         x = self.conv1x1_repr(x)
         x = self.conv(x)
         x = self.bn(x)
-
-        x += state
         x = nn.functional.relu(x)
 
         for block in self.resblocks:
             x = block(x)
         state = x
+        state = self.repr_conv(state)
         if self.discretize_type == 'gumbel':
             state = F.gumbel_softmax(state, hard=True, dim=1)
         elif self.discretize_type == 'vq':
@@ -323,6 +330,7 @@ class PredictionNetwork(nn.Module):
         block_output_size_policy,
         momentum=0.1,
         init_zero=False,
+        repr_channels=None,
     ):
         """Prediction network
         Parameters
@@ -354,8 +362,8 @@ class PredictionNetwork(nn.Module):
         self.resblocks = nn.ModuleList(
             [ResidualBlock(num_channels, num_channels, momentum=momentum) for _ in range(num_blocks)]
         )
-
-        self.conv1x1_repr = nn.Conv2d(num_channels, num_channels, 1)
+        repr_channels = repr_channels or num_channels
+        self.conv1x1_repr = nn.Conv2d(repr_channels, num_channels, 1)
         self.conv1x1_value = nn.Conv2d(num_channels, reduced_channels_value, 1)
         self.conv1x1_policy = nn.Conv2d(num_channels, reduced_channels_policy, 1)
         self.bn_value = nn.BatchNorm2d(reduced_channels_value, momentum=momentum)
@@ -412,6 +420,7 @@ class EfficientZeroNet(BaseNet):
         init_zero=False,
         state_norm=False,
         discretize_type=None,
+        repr_channels=None,
     ):
         """EfficientZero network
         Parameters
@@ -492,6 +501,7 @@ class EfficientZeroNet(BaseNet):
             downsample,
             momentum=bn_mt,
             discretize_type=discretize_type,
+            repr_channels=repr_channels,
         )
 
         self.dynamics_network = DynamicsNetwork(
@@ -505,6 +515,7 @@ class EfficientZeroNet(BaseNet):
             momentum=bn_mt,
             init_zero=self.init_zero,
             discretize_type=discretize_type,
+            repr_channels=repr_channels + 1,
         )
 
         self.prediction_network = PredictionNetwork(
@@ -520,10 +531,12 @@ class EfficientZeroNet(BaseNet):
             block_output_size_policy,
             momentum=bn_mt,
             init_zero=self.init_zero,
+            repr_channels=repr_channels,
         )
 
         # projection
-        in_dim = np.prod([num_channels, *out_shape])
+        repr_channels = repr_channels or num_channels
+        in_dim = np.prod([repr_channels, *out_shape])
         self.projection_in_dim = in_dim
         self.projection = nn.Sequential(
             nn.Linear(self.projection_in_dim, self.proj_hid),

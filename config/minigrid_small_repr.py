@@ -1,31 +1,31 @@
 import torch
 
 from core.config import BaseConfig
-from core.utils import make_atari, WarpFrame, EpisodicLifeEnv
+from core.utils import make_minigrid, WarpFrame
 from core.dataset import Transforms
 from .general.env_wrapper import AtariWrapper
 from .general.model import EfficientZeroNet
 
 
-class AtariDebugConfig(BaseConfig):
+class MinigridConfig(BaseConfig):
     def __init__(self):
-        super(AtariDebugConfig, self).__init__(
-            training_steps=500,
-            last_steps=100,
-            test_interval=50,
-            log_interval=50,
-            vis_interval=1000,
-            test_episodes=1,
-            checkpoint_interval=100,
-            target_model_interval=50,
-            save_ckpt_interval=100, # 10000,
-            max_moves=5000,
-            test_max_moves=5000,
+        super(MinigridConfig, self).__init__(
+            training_steps=50000,
+            last_steps=2000,
+            test_interval=2000,
+            log_interval=200,
+            vis_interval=500,
+            test_episodes=20,
+            checkpoint_interval=10000,
+            target_model_interval=200,
+            save_ckpt_interval=10000,
+            max_moves=200,
+            test_max_moves=150,
             history_length=400,
             discount=0.997,
             dirichlet_alpha=0.3,
             value_delta_max=0.01,
-            num_simulations=25,
+            num_simulations=20,
             batch_size=128,
             td_steps=5,
             num_actors=1,
@@ -40,15 +40,15 @@ class AtariDebugConfig(BaseConfig):
             lr_warm_up=0.01,
             lr_init=0.2,
             lr_decay_rate=0.1,
-            lr_decay_steps=1000,
+            lr_decay_steps=30000,
             auto_td_steps_ratio=0.3,
             # replay window
-            start_transitions=8,
-            total_transitions=10_000,
+            start_transitions=20,
+            total_transitions=100_000,
             transition_num=1,
             # frame skip & stack observation
-            frame_skip=4,
-            stacked_observations=4,
+            frame_skip=1,
+            stacked_observations=1,
             # coefficient
             reward_loss_coeff=1,
             value_loss_coeff=0.25,
@@ -61,7 +61,7 @@ class AtariDebugConfig(BaseConfig):
             proj_hid=128,
             proj_out=128,
             pred_hid=64,
-            pred_out=128,)
+            pred_out=128)
         self.discount **= self.frame_skip
         self.max_moves //= self.frame_skip
         self.test_max_moves //= self.frame_skip
@@ -73,9 +73,9 @@ class AtariDebugConfig(BaseConfig):
         self.blocks = 1  # Number of blocks in the ResNet
         self.channels = 64  # Number of channels in the ResNet
         self.repr_shape = (6, 6)
+        self.repr_channels = 1
         self.discretize_type = None
-        self.repr_channels = 64
-        
+
         if self.gray_scale:
             self.channels = 32
         self.reduced_channels_reward = 16  # x36 Number of channels in reward head
@@ -102,7 +102,7 @@ class AtariDebugConfig(BaseConfig):
         # gray scale
         if self.gray_scale:
             self.image_channel = 1
-        obs_shape = (self.image_channel, 96, 96)
+        obs_shape = (self.image_channel, 56, 56)
         self.obs_shape = (obs_shape[0] * self.stacked_observations, obs_shape[1], obs_shape[2])
 
         game = self.new_game()
@@ -139,16 +139,9 @@ class AtariDebugConfig(BaseConfig):
 
     def new_game(self, seed=None, save_video=False, save_path=None, video_callable=None, uid=None, test=False, final_test=False):
         if test:
-            if final_test:
-                max_moves = 108000 // self.frame_skip
-            else:
-                max_moves = self.test_max_moves
-            env = make_atari(self.env_name, skip=self.frame_skip, max_episode_steps=max_moves)
+            env = make_minigrid(self.env_name, skip=self.frame_skip, max_episode_steps=self.test_max_moves)
         else:
-            env = make_atari(self.env_name, skip=self.frame_skip, max_episode_steps=self.max_moves)
-
-        if self.episode_life and not test:
-            env = EpisodicLifeEnv(env)
+            env = make_minigrid(self.env_name, skip=self.frame_skip, max_episode_steps=self.max_moves)
         env = WarpFrame(env, width=self.obs_shape[1], height=self.obs_shape[2], grayscale=self.gray_scale)
 
         if seed is not None:
@@ -173,4 +166,4 @@ class AtariDebugConfig(BaseConfig):
         return self.transforms.transform(images)
 
 
-game_config = AtariDebugConfig()
+game_config = MinigridConfig()

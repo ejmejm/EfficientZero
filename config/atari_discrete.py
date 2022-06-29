@@ -76,6 +76,7 @@ class AtariFastConfig(BaseConfig):
         self.channels = 32  # Number of channels in the ResNet
         self.repr_shape = (10, 10)
         self.discretize_type = 'gumbel'
+        self.repr_channels = 64
 
         if self.gray_scale:
             self.channels = 32
@@ -135,7 +136,8 @@ class AtariFastConfig(BaseConfig):
             pred_out=self.pred_out,
             init_zero=self.init_zero,
             state_norm=self.state_norm,
-            discretize_type=self.discretize_type,)
+            discretize_type=self.discretize_type,
+            repr_channels=self.repr_channels)
 
     def new_game(self, seed=None, save_video=False, save_path=None, video_callable=None, uid=None, test=False, final_test=False):
         if test:

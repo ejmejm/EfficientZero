@@ -7,26 +7,26 @@ from .general.env_wrapper import AtariWrapper
 from .general.model import EfficientZeroNet
 
 
-class AtariDebugConfig(BaseConfig):
+class AtariFastConfig(BaseConfig):
     def __init__(self):
-        super(AtariDebugConfig, self).__init__(
-            training_steps=500,
-            last_steps=100,
-            test_interval=50,
-            log_interval=50,
+        super(AtariFastConfig, self).__init__(
+            training_steps=30_000,
+            last_steps=2000,
+            test_interval=1000,
+            log_interval=200,
             vis_interval=1000,
-            test_episodes=1,
-            checkpoint_interval=100,
-            target_model_interval=50,
-            save_ckpt_interval=100, # 10000,
-            max_moves=5000,
+            test_episodes=3,
+            checkpoint_interval=1000,
+            target_model_interval=200,
+            save_ckpt_interval=1000,
+            max_moves=20_000,
             test_max_moves=5000,
             history_length=400,
             discount=0.997,
             dirichlet_alpha=0.3,
             value_delta_max=0.01,
-            num_simulations=25,
-            batch_size=128,
+            num_simulations=10,
+            batch_size=256,
             td_steps=5,
             num_actors=1,
             # network initialization/ & normalization
@@ -40,11 +40,11 @@ class AtariDebugConfig(BaseConfig):
             lr_warm_up=0.01,
             lr_init=0.2,
             lr_decay_rate=0.1,
-            lr_decay_steps=1000,
+            lr_decay_steps=20_000,
             auto_td_steps_ratio=0.3,
             # replay window
             start_transitions=8,
-            total_transitions=10_000,
+            total_transitions=100_000,
             transition_num=1,
             # frame skip & stack observation
             frame_skip=4,
@@ -55,13 +55,13 @@ class AtariDebugConfig(BaseConfig):
             policy_loss_coeff=1,
             consistency_coeff=2,
             # reward sum
-            lstm_hidden_size=64,
+            lstm_hidden_size=128,
             lstm_horizon_len=5,
             # siamese
-            proj_hid=128,
-            proj_out=128,
-            pred_hid=64,
-            pred_out=128,)
+            proj_hid=256,
+            proj_out=256,
+            pred_hid=128,
+            pred_out=256,)
         self.discount **= self.frame_skip
         self.max_moves //= self.frame_skip
         self.test_max_moves //= self.frame_skip
@@ -74,8 +74,8 @@ class AtariDebugConfig(BaseConfig):
         self.channels = 64  # Number of channels in the ResNet
         self.repr_shape = (6, 6)
         self.discretize_type = None
-        self.repr_channels = 64
-        
+        self.repr_channels = 1
+
         if self.gray_scale:
             self.channels = 32
         self.reduced_channels_reward = 16  # x36 Number of channels in reward head
@@ -173,4 +173,4 @@ class AtariDebugConfig(BaseConfig):
         return self.transforms.transform(images)
 
 
-game_config = AtariDebugConfig()
+game_config = AtariFastConfig()

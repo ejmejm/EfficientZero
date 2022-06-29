@@ -44,7 +44,7 @@ if __name__ == '__main__':
                         help='Uses priority for data sampling in replay buffer. '
                              'Also, priority for new data is calculated based on loss (default: False)')
     parser.add_argument('--use_max_priority', action='store_true', default=False, help='max priority')
-    parser.add_argument('--test_episodes', type=int, default=10, help='Evaluation episode count (default: %(default)s)')
+    parser.add_argument('--final_test_episodes', type=int, default=10, help='Evaluation episode count (default: %(default)s)')
     parser.add_argument('--use_augmentation', action='store_true', default=True, help='use augmentation')
     parser.add_argument('--augmentation', type=str, default=['shift', 'intensity'], nargs='+',
                         choices=['none', 'rrc', 'affine', 'crop', 'blur', 'shift', 'intensity'],
@@ -60,11 +60,6 @@ if __name__ == '__main__':
     args.device = 'cuda' if (not args.no_cuda) and torch.cuda.is_available() else 'cpu'
     assert args.revisit_policy_search_rate is None or 0 <= args.revisit_policy_search_rate <= 1, \
         ' Revisit policy search rate should be in [0,1]'
-
-    if args.wandb:
-        import wandb
-        wandb.init(project='EfficientZeroDiscrete', config=args,
-            group=args.case, sync_tensorboard=True)
 
     if args.opr == 'train':
         ray.init(num_gpus=args.num_gpus, num_cpus=args.num_cpus,
@@ -86,6 +81,14 @@ if __name__ == '__main__':
     exp_path = game_config.set_config(args)
     exp_path, log_base_path = make_results_dir(exp_path, args)
 
+    if args.wandb:
+        import wandb
+        wandb.init(
+            project = 'EfficientZeroDiscrete',
+            config = {**args.__dict__, **game_config.get_hparams()},
+            group = args.case,
+            sync_tensorboard = True)
+
     # set-up logger
     init_logger(log_base_path)
     logging.getLogger('train').info('Path: {}'.format(exp_path))
@@ -104,7 +107,7 @@ if __name__ == '__main__':
             model.set_weights(weights)
             total_steps = game_config.training_steps + game_config.last_steps
             print('Starting testing...')
-            test_score, test_path = test(game_config, model.to(device), total_steps, game_config.test_episodes,
+            test_score, test_path = test(game_config, model.to(device), total_steps, game_config.final_test_episodes,
                                          device, render=False, save_video=args.save_video, final_test=True, use_pb=True)
             mean_score = test_score.mean()
             std_score = test_score.std()
@@ -132,7 +135,7 @@ if __name__ == '__main__':
             model = game_config.get_uniform_network().to(device)
             model.load_state_dict(torch.load(model_path, map_location=torch.device(device)))
             print('Starting testing...')
-            test_score, test_path = test(game_config, model, 0, args.test_episodes, device=device, render=args.render,
+            test_score, test_path = test(game_config, model, 0, args.final_test_episodes, device=device, render=args.render,
                                          save_video=args.save_video, final_test=True, use_pb=True)
             mean_score = test_score.mean()
             std_score = test_score.std()
