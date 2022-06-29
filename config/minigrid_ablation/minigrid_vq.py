@@ -49,7 +49,7 @@ class MinigridDebugConfig(BaseConfig):
             lr_decay_steps=1000,
             auto_td_steps_ratio=0.3,
             # replay window
-            start_transitions=1, # 4,
+            start_transitions=4, # 4,
             total_transitions=100_000,
             transition_num=1,
             # frame skip & stack observation

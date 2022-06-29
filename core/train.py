@@ -256,6 +256,10 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
             config.value_loss_coeff * value_loss + config.reward_loss_coeff * value_prefix_loss)
     weighted_loss = (weights * loss).mean()
 
+    # Add in discretization loss for when applicable
+    disc_loss = model.reset_disc_losses()
+    weighted_loss += disc_loss
+
     # backward
     parameters = model.parameters()
     if config.amp_type == 'torch_amp':

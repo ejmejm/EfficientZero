@@ -268,7 +268,7 @@ class RepresentationNetwork(nn.Module):
             True -> do downsampling for observations. (For board games, do not need)
         """
         super().__init__()
-        if discretize_type.startswith('vq'):
+        if discretize_type and discretize_type.startswith('vq'):
             assert vq_model is not None, 'vq_model is None but discretize_type is vq'
         self.discretize_type = discretize_type
         self.vq_model = vq_model
@@ -301,9 +301,10 @@ class RepresentationNetwork(nn.Module):
         for block in self.resblocks:
             x = block(x)
         x = self.repr_conv(x)
+        disc_loss = 0
         if self.discretize_type is not None:
             x, disc_loss = discretize(x, self.discretize_type, vq_model=self.vq_model)
-        return x
+        return x, disc_loss
 
     def get_param_mean(self):
         mean = []
@@ -348,7 +349,7 @@ class DynamicsNetwork(nn.Module):
             True -> zero initialization for the last layer of reward mlp
         """
         super().__init__()
-        if discretize_type.startswith('vq'):
+        if discretize_type and discretize_type.startswith('vq'):
             assert vq_model is not None, 'vq_model is None but discretize_type is vq'
         self.discretize_type = discretize_type
         self.vq_model = vq_model
@@ -388,6 +389,7 @@ class DynamicsNetwork(nn.Module):
             x = block(x)
         state = x
         state = self.repr_conv(state)
+        disc_loss = 0
         if self.discretize_type is not None:
             state, disc_loss = discretize(state, self.discretize_type, vq_model=self.vq_model)
 
@@ -402,7 +404,7 @@ class DynamicsNetwork(nn.Module):
         value_prefix = nn.functional.relu(value_prefix)
         value_prefix = self.fc(value_prefix)
 
-        return state, reward_hidden, value_prefix
+        return state, reward_hidden, value_prefix, disc_loss
 
     def get_dynamic_mean(self):
         dynamic_mean = np.abs(self.conv.weight.detach().cpu().numpy().reshape(-1)).tolist()
@@ -605,7 +607,9 @@ class EfficientZeroNet(BaseNet):
 
         repr_channels = repr_channels or num_channels
         self.vq_model = None
-        if discretize_type.startswith('vq'):
+        self.disc_cum_loss = 0
+        self.disc_loss_count = 0
+        if discretize_type and discretize_type.startswith('vq'):
             codebook_size = vq_params.get('codebook_size', 64)
             if discretize_type == 'vq_one_hot':
                 assert codebook_size == repr_channels, 'codebook_size must be equal to repr_channels ' + \
@@ -685,7 +689,10 @@ class EfficientZeroNet(BaseNet):
         return policy, value
 
     def representation(self, observation):
-        encoded_state = self.representation_network(observation)
+        encoded_state, disc_loss = self.representation_network(observation)
+        if self.training:
+            self.disc_cum_loss += disc_loss
+            self.disc_loss_count += 1
         if not self.state_norm:
             return encoded_state
         else:
@@ -710,13 +717,23 @@ class EfficientZeroNet(BaseNet):
             action[:, :, None, None] * action_one_hot / self.action_space_size
         )
         x = torch.cat((encoded_state, action_one_hot), dim=1)
-        next_encoded_state, reward_hidden, value_prefix = self.dynamics_network(x, reward_hidden)
+        next_encoded_state, reward_hidden, value_prefix, disc_loss = self.dynamics_network(x, reward_hidden)
+
+        if self.training:
+            self.disc_cum_loss += disc_loss
+            self.disc_loss_count += 1
 
         if not self.state_norm:
             return next_encoded_state, reward_hidden, value_prefix
         else:
             next_encoded_state_normalized = renormalize(next_encoded_state)
             return next_encoded_state_normalized, reward_hidden, value_prefix
+
+    def reset_disc_losses(self):
+        mean_disc_loss = self.disc_cum_loss / self.disc_loss_count
+        self.disc_cum_loss = 0
+        self.disc_loss_count = 0
+        return mean_disc_loss
 
     def get_params_mean(self):
         representation_mean = self.representation_network.get_param_mean()

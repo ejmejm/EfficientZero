@@ -49,7 +49,7 @@ class MinigridDebugConfig(BaseConfig):
             lr_decay_steps=1000,
             auto_td_steps_ratio=0.3,
             # replay window
-            start_transitions=1, # 4,
+            start_transitions=4, # 4,
             total_transitions=100_000,
             transition_num=1,
             # frame skip & stack observation
@@ -81,7 +81,7 @@ class MinigridDebugConfig(BaseConfig):
         self.repr_shape = (8, 8)
         self.repr_channels = 1
         self.discretize_type = None
-        # self.vq_params = {'codebook_size': self.repr_channels}
+        self.vq_params = {'codebook_size': self.repr_channels}
 
         self.reduced_channels_reward = 16  # x36 Number of channels in reward head
         self.reduced_channels_value = 16  # x36 Number of channels in value head
