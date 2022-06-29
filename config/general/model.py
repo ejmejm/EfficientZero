@@ -58,6 +58,110 @@ def conv3x3(in_channels, out_channels, stride=1):
         in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False
     )
 
+# Source: https://github.com/zalandoresearch/pytorch-vq-vae/blob/master/vq-vae.ipynb
+class VectorQuantizerEMA(nn.Module):
+    def __init__(self, n_embeddings, embedding_dim, commitment_cost, decay, epsilon=1e-5):
+        super(VectorQuantizerEMA, self).__init__()
+        
+        self._embedding_dim = embedding_dim
+        self._num_embeddings = n_embeddings
+        
+        self._embedding = nn.Embedding(self._num_embeddings, self._embedding_dim)
+        self._embedding.weight.data.normal_()
+        self._commitment_cost = commitment_cost
+        
+        self.register_buffer('_ema_cluster_size', torch.zeros(n_embeddings))
+        self._ema_w = nn.Parameter(torch.Tensor(n_embeddings, self._embedding_dim))
+        self._ema_w.data.normal_()
+        
+        self._decay = decay
+        self._epsilon = epsilon
+
+    def decode(self, encoding_indices):
+      batch_size, n_latents = encoding_indices.shape
+      encoding_indices = encoding_indices.reshape(-1, 1)
+      encodings = torch.zeros(encoding_indices.shape[0], self._num_embeddings, device=encoding_indices.device)
+      encodings.scatter_(1, encoding_indices, 1)
+      # Quantize and unflatten
+      quantized = torch.matmul(encodings, self._embedding.weight).view(batch_size, n_latents, self._embedding_dim)
+      return quantized.permute(0, 2, 1)
+
+    def forward(self, inputs):
+        # convert inputs from BCHW -> BHWC
+        inputs = inputs.permute(0, 2, 3, 1).contiguous()
+        input_shape = inputs.shape
+        
+        # Flatten input
+        flat_input = inputs.view(-1, self._embedding_dim)
+        
+        # Calculate distances
+        distances = (torch.sum(flat_input**2, dim=1, keepdim=True) 
+                    + torch.sum(self._embedding.weight**2, dim=1)
+                    - 2 * torch.matmul(flat_input, self._embedding.weight.t()))
+            
+        # Encoding
+        encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
+        encodings = torch.zeros(encoding_indices.shape[0], self._num_embeddings, device=inputs.device)
+        encodings.scatter_(1, encoding_indices, 1)
+        
+        # Quantize and unflatten
+        quantized = torch.matmul(encodings, self._embedding.weight).view(input_shape)
+        
+        # Use EMA to update the embedding vectors
+        if self.training:
+            self._ema_cluster_size = self._ema_cluster_size * self._decay + \
+                                     (1 - self._decay) * torch.sum(encodings, 0)
+            
+            # Laplace smoothing of the cluster size
+            n = torch.sum(self._ema_cluster_size.data)
+            self._ema_cluster_size = (
+                (self._ema_cluster_size + self._epsilon)
+                / (n + self._num_embeddings * self._epsilon) * n)
+            
+            dw = torch.matmul(encodings.t(), flat_input)
+            self._ema_w = nn.Parameter(self._ema_w * self._decay + (1 - self._decay) * dw)
+            
+            self._embedding.weight = nn.Parameter(self._ema_w / self._ema_cluster_size.unsqueeze(1))
+        
+        # Loss
+        e_latent_loss = F.mse_loss(quantized.detach(), inputs)
+        loss = self._commitment_cost * e_latent_loss
+        
+        # Straight Through Estimator
+        quantized = inputs + (quantized - inputs).detach()
+        avg_probs = torch.mean(encodings, dim=0)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+        
+        # convert quantized from BHWC -> BCHW
+        return loss, quantized.permute(0, 3, 1, 2).contiguous(), perplexity, encodings
+
+def discretize(x, discretize_type, **kwargs):
+    loss = 0
+    if discretize_type == 'gumbel':
+        x = F.gumbel_softmax(x, hard=True, dim=1)
+    elif discretize_type == 'stochastic':
+        in_shape = x.shape
+        n_channels = in_shape[1]
+        probs = F.softmax(x, dim=1)
+        flat_probs = probs.permute(0, 2, 3, 1).reshape(-1, n_channels)
+        samples = torch.multinomial(flat_probs, 1).squeeze()
+        one_hot_samples = F.one_hot(samples, num_classes=n_channels).float()
+        one_hot_samples = one_hot_samples.reshape(in_shape[0], in_shape[2], in_shape[3], in_shape[1])
+        one_hot_samples = one_hot_samples.permute(0, 3, 1, 2)
+        x = probs + (one_hot_samples - probs).detach() # Straight-though gradients
+        x = x.contiguous()
+    elif discretize_type == 'vq':
+        quantizer = kwargs['vq_model']
+        loss, quantized, _, _ = quantizer(x)
+        x = quantized
+    elif discretize_type == 'vq_one_hot':
+        quantizer = kwargs['vq_model']
+        loss, _, _, encodings = quantizer(x)
+        encodings = encodings.reshape(*x.shape)
+        x = encodings
+    else:
+        raise ValueError('Unknown discretize type: {}'.format(discretize_type))
+    return x, loss
 
 # Residual block
 class ResidualBlock(nn.Module):
@@ -149,6 +253,7 @@ class RepresentationNetwork(nn.Module):
         momentum=0.1,
         discretize_type=None,
         repr_channels=None,
+        vq_model=None,
     ):
         """Representation network
         Parameters
@@ -163,7 +268,10 @@ class RepresentationNetwork(nn.Module):
             True -> do downsampling for observations. (For board games, do not need)
         """
         super().__init__()
+        if discretize_type.startswith('vq'):
+            assert vq_model is not None, 'vq_model is None but discretize_type is vq'
         self.discretize_type = discretize_type
+        self.vq_model = vq_model
         self.downsample = downsample
         if self.downsample:
             self.downsample_net = DownSample(
@@ -193,10 +301,8 @@ class RepresentationNetwork(nn.Module):
         for block in self.resblocks:
             x = block(x)
         x = self.repr_conv(x)
-        if self.discretize_type == 'gumbel':
-            x = F.gumbel_softmax(x, hard=True, dim=1)
-        elif self.discretize_type == 'vq':
-            raise NotImplementedError
+        if self.discretize_type is not None:
+            x, disc_loss = discretize(x, self.discretize_type, vq_model=self.vq_model)
         return x
 
     def get_param_mean(self):
@@ -221,6 +327,7 @@ class DynamicsNetwork(nn.Module):
         init_zero=False,
         discretize_type=None,
         repr_channels=None,
+        vq_model=None,
     ):
         """Dynamics network
         Parameters
@@ -241,9 +348,13 @@ class DynamicsNetwork(nn.Module):
             True -> zero initialization for the last layer of reward mlp
         """
         super().__init__()
+        if discretize_type.startswith('vq'):
+            assert vq_model is not None, 'vq_model is None but discretize_type is vq'
+        self.discretize_type = discretize_type
+        self.vq_model = vq_model
+
         self.num_channels = num_channels
         self.lstm_hidden_size = lstm_hidden_size
-        self.discretize_type = discretize_type
 
         repr_channels = repr_channels or num_channels
         self.conv1x1_repr = nn.Conv2d(repr_channels, num_channels, 1)
@@ -277,10 +388,8 @@ class DynamicsNetwork(nn.Module):
             x = block(x)
         state = x
         state = self.repr_conv(state)
-        if self.discretize_type == 'gumbel':
-            state = F.gumbel_softmax(state, hard=True, dim=1)
-        elif self.discretize_type == 'vq':
-            raise NotImplementedError
+        if self.discretize_type is not None:
+            state, disc_loss = discretize(state, self.discretize_type, vq_model=self.vq_model)
 
         x = self.conv1x1_reward(x)
         x = self.bn_reward(x)
@@ -421,6 +530,7 @@ class EfficientZeroNet(BaseNet):
         state_norm=False,
         discretize_type=None,
         repr_channels=None,
+        vq_params={},
     ):
         """EfficientZero network
         Parameters
@@ -493,6 +603,20 @@ class EfficientZeroNet(BaseNet):
             if downsample
             else (reduced_channels_policy * observation_shape[1] * observation_shape[2]))
 
+        repr_channels = repr_channels or num_channels
+        self.vq_model = None
+        if discretize_type.startswith('vq'):
+            codebook_size = vq_params.get('codebook_size', 64)
+            if discretize_type == 'vq_one_hot':
+                assert codebook_size == repr_channels, 'codebook_size must be equal to repr_channels ' + \
+                    f'({repr_channels}) for vq_one_hot'
+
+            self.vq_model = VectorQuantizerEMA(
+                codebook_size,
+                repr_channels,
+                commitment_cost = vq_params.get('commitment_cost', 0.25),
+                decay = vq_params.get('decay', 0.99))
+
         self.representation_network = RepresentationNetwork(
             observation_shape,
             num_blocks,
@@ -502,6 +626,7 @@ class EfficientZeroNet(BaseNet):
             momentum=bn_mt,
             discretize_type=discretize_type,
             repr_channels=repr_channels,
+            vq_model=self.vq_model,
         )
 
         self.dynamics_network = DynamicsNetwork(
@@ -516,6 +641,7 @@ class EfficientZeroNet(BaseNet):
             init_zero=self.init_zero,
             discretize_type=discretize_type,
             repr_channels=repr_channels + 1,
+            vq_model=self.vq_model,
         )
 
         self.prediction_network = PredictionNetwork(
@@ -535,7 +661,6 @@ class EfficientZeroNet(BaseNet):
         )
 
         # projection
-        repr_channels = repr_channels or num_channels
         in_dim = np.prod([repr_channels, *out_shape])
         self.projection_in_dim = in_dim
         self.projection = nn.Sequential(

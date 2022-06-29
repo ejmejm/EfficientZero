@@ -9,8 +9,8 @@ import torch
 from core.config import BaseConfig
 from core.utils import make_minigrid, WarpFrame
 from core.dataset import Transforms
-from .general.env_wrapper import AtariWrapper
-from .general.model import EfficientZeroNet
+from ..general.env_wrapper import AtariWrapper
+from ..general.model import EfficientZeroNet
 
 
 class MinigridDebugConfig(BaseConfig):
@@ -18,10 +18,10 @@ class MinigridDebugConfig(BaseConfig):
         super(MinigridDebugConfig, self).__init__(
             training_steps=30_000,
             last_steps=2000,
-            test_interval=1000,
+            test_interval=500,
             log_interval=200,
             vis_interval=1000,
-            test_episodes=4,
+            test_episodes=5,
             checkpoint_interval=1000,
             target_model_interval=200,
             save_ckpt_interval=1000,
@@ -78,9 +78,9 @@ class MinigridDebugConfig(BaseConfig):
         self.bn_mt = 0.1
         self.blocks = 1  # Number of blocks in the ResNet
         self.channels = 32  # Number of channels in the ResNet
-        self.repr_shape = (6, 6)
+        self.repr_shape = (8, 8)
         self.repr_channels = 32
-        self.discretize_type = None # 'vq' # 'gumbel'
+        self.discretize_type = 'vq'
         self.vq_params = {'codebook_size': self.repr_channels}
 
         self.reduced_channels_reward = 16  # x36 Number of channels in reward head
