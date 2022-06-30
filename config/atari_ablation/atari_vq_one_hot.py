@@ -3,14 +3,14 @@ import torch
 from core.config import BaseConfig
 from core.utils import make_atari, WarpFrame, EpisodicLifeEnv
 from core.dataset import Transforms
-from .general.env_wrapper import AtariWrapper
-from .general.model import EfficientZeroNet
+from ..general.env_wrapper import AtariWrapper
+from ..general.model import EfficientZeroNet
 
 
 class AtariFastConfig(BaseConfig):
     def __init__(self):
         super(AtariFastConfig, self).__init__(
-            training_steps=30_000,
+            training_steps=50_000,
             last_steps=2000,
             test_interval=1000,
             log_interval=200,
@@ -74,8 +74,8 @@ class AtariFastConfig(BaseConfig):
         self.channels = 64  # Number of channels in the ResNet
         self.repr_shape = (6, 6)
         self.discretize_type = None
-        self.repr_channels = 64
-        self.discretize_type = 'stochastic'
+        self.repr_channels = 32
+        self.discretize_type = 'vq_one_hot'
         self.vq_params = {'codebook_size': self.repr_channels}
 
         if self.gray_scale:
