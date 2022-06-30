@@ -8,7 +8,7 @@ import logging
 
 import gym_minigrid
 from gym_minigrid.wrappers import RGBImgPartialObsWrapper, ImgObsWrapper
-from gym_minigrid.wrappers import FullyObsWrapper, RGBImgObsWrapper
+from gym_minigrid.wrappers import RGBImgObsWrapper, ReseedWrapper
 import numpy as np
 
 from scipy.stats import entropy
@@ -239,12 +239,17 @@ def make_atari(env_id, skip=4, max_episode_steps=None):
         env = TimeLimit(env, max_episode_steps=max_episode_steps)
     return env
 
-def make_minigrid(env_id, skip=1, max_episode_steps=None, partial_obs=True):
+def make_minigrid(
+        env_id, skip=1, max_episode_steps=None, partial_obs=True,
+        tile_size=2, same_seed=False):
     env = gym.make(env_id)
+    if same_seed:
+        env = ReseedWrapper(env)
+
     if partial_obs:
         env = RGBImgPartialObsWrapper(env)
     else:
-        env = RGBImgObsWrapper(env, tile_size=2)
+        env = RGBImgObsWrapper(env, tile_size=tile_size)
     env = ImgObsWrapper(env)
     
     env = MaxAndSkipEnv(env, skip=skip)
