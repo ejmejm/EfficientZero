@@ -67,6 +67,7 @@ class BaseConfig(object):
                  value_loss_coeff: float = 1,
                  policy_loss_coeff: float = 1,
                  consistency_coeff: float = 1,
+                 discrete_loss_coeff: float = 1,
                  proj_hid: int = 256,
                  proj_out: int = 256,
                  pred_hid: int = 64,
@@ -251,6 +252,7 @@ class BaseConfig(object):
         self.value_loss_coeff = value_loss_coeff
         self.policy_loss_coeff = policy_loss_coeff
         self.consistency_coeff = consistency_coeff
+        self.discrete_loss_coeff = discrete_loss_coeff
         self.device = 'cuda'
         self.exp_path = None  # experiment path
         self.debug = False

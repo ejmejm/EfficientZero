@@ -59,6 +59,71 @@ def conv3x3(in_channels, out_channels, stride=1):
     )
 
 # Source: https://github.com/zalandoresearch/pytorch-vq-vae/blob/master/vq-vae.ipynb
+class VectorQuantizer(nn.Module):
+    def __init__(self, num_embeddings, embedding_dim, commitment_cost):
+        super(VectorQuantizer, self).__init__()
+        
+        self._embedding_dim = embedding_dim
+        self._num_embeddings = num_embeddings
+        
+        self._embedding = nn.Embedding(self._num_embeddings, self._embedding_dim)
+        self._embedding.weight.data.normal_()
+        # .uniform_(-1/self._num_embeddings, 1/self._num_embeddings)
+        self._commitment_cost = commitment_cost
+
+    def forward(self, inputs):
+        # convert inputs from BCHW -> BHWC
+        inputs = inputs.permute(0, 2, 3, 1).contiguous()
+        input_shape = inputs.shape
+        
+        # Flatten input
+        flat_input = inputs.view(-1, self._embedding_dim)
+        
+        # (N*H*W,C) -> (N*H*W,1)
+        # (S,C) -> (S)
+        # (N*H*W,C) x (C,S) -> (N*H*W,S)
+
+        # flat_input - self._embedding.weight
+        # diffs = embeds - flat_input.repeat(s, 1, 1).permute(1, 0, 2)
+        # diffs = diffs.square().sum(dim=2).sqrt()
+
+        # # Calculate distances
+        # distances = (torch.sum(flat_input**2, dim=1, keepdim=True) 
+        #             + torch.sum(self._embedding.weight**2, dim=1)
+        #             - 2 * torch.matmul(flat_input, self._embedding.weight.t()))
+
+        diffs = self._embedding.weight - flat_input.repeat(self._num_embeddings, 1, 1).permute(1, 0, 2)
+        distances = diffs.square().sum(dim=2).sqrt()
+            
+        # print('ADFSDFSDF', distances.shape, distances_orig.shape, (distances_orig == distances).all())
+
+        # Encoding
+        encoding_indices = torch.argmin(distances, dim=1).unsqueeze(1)
+        encodings = torch.zeros(encoding_indices.shape[0], self._num_embeddings, device=inputs.device)
+        encodings.scatter_(1, encoding_indices, 1)
+        
+        # Quantize and unflatten
+        quantized = torch.matmul(encodings, self._embedding.weight).view(input_shape)
+        
+        # Loss
+        e_latent_loss = F.mse_loss(quantized.detach(), inputs, reduction='none')
+        q_latent_loss = F.mse_loss(quantized, inputs.detach(), reduction='none')
+        losses = q_latent_loss + self._commitment_cost * e_latent_loss
+        losses = losses.reshape(losses.shape[0], -1).mean(dim=1)
+        # if losses.mean() > 1:
+        #     print('REAL LOSS:', losses.mean().item())
+        #     # print('INPUTS MAGNITUDE:', inputs.abs().mean().item())
+        
+        quantized = inputs + (quantized - inputs).detach()
+        avg_probs = torch.mean(encodings, dim=0)
+        perplexity = torch.exp(-torch.sum(avg_probs * torch.log(avg_probs + 1e-10)))
+        # if losses.mean() > 1:
+        #     print('perplexity:', perplexity.item())
+        
+        # convert quantized from BHWC -> BCHW
+        return losses, quantized.permute(0, 3, 1, 2).contiguous(), perplexity, encodings
+
+# Source: https://github.com/zalandoresearch/pytorch-vq-vae/blob/master/vq-vae.ipynb
 class VectorQuantizerEMA(nn.Module):
     def __init__(self, n_embeddings, embedding_dim, commitment_cost, decay, epsilon=1e-5):
         super(VectorQuantizerEMA, self).__init__()
@@ -136,7 +201,7 @@ class VectorQuantizerEMA(nn.Module):
         return loss, quantized.permute(0, 3, 1, 2).contiguous(), perplexity, encodings
 
 def discretize(x, discretize_type, **kwargs):
-    loss = 0
+    loss = torch.zeros(x.shape[0], dtype=torch.float32, device=x.device)
     if discretize_type == 'gumbel':
         x = F.gumbel_softmax(x, hard=True, dim=1)
     elif discretize_type == 'stochastic':
@@ -288,7 +353,22 @@ class RepresentationNetwork(nn.Module):
             [ResidualBlock(num_channels, num_channels, momentum=momentum) for _ in range(num_blocks)]
         )
         repr_channels = repr_channels or num_channels
-        self.repr_conv = conv3x3(num_channels, repr_channels)
+        self.repr_conv = nn.Sequential(
+            conv3x3(num_channels, repr_channels),
+            nn.BatchNorm2d(repr_channels, momentum=momentum),
+        )
+
+    def get_cont_vectors(self, x):
+        if self.downsample:
+            x = self.downsample_net(x)
+        else:
+            x = self.conv(x)
+        x = self.bn(x)
+        x = nn.functional.relu(x)
+        for block in self.resblocks:
+            x = block(x)
+        x = self.repr_conv(x)
+        return x.permute(0, 2, 3, 1).reshape(-1, x.shape[1])
 
     def forward(self, x):
         if self.downsample:
@@ -298,10 +378,17 @@ class RepresentationNetwork(nn.Module):
             x = self.bn(x)
             x = nn.functional.relu(x)
 
+        # if x.shape[0] == 256:
+        #     print('\nInitial Inference\n------\npre_res:', x.abs().mean().item())
         for block in self.resblocks:
             x = block(x)
+        # if x.shape[0] == 256:
+        #     print('pre_repr_conv:', x.abs().mean().item())
         x = self.repr_conv(x)
-        disc_loss = 0
+        # if x.shape[0] == 256:
+        #     print('pre_discrete:', x.abs().mean().item())
+        #     print('------\n')
+        disc_loss = torch.zeros(x.shape[0], dtype=torch.float32, device=x.device)
         if self.discretize_type is not None:
             x, disc_loss = discretize(x, self.discretize_type, vq_model=self.vq_model)
         return x, disc_loss
@@ -361,7 +448,10 @@ class DynamicsNetwork(nn.Module):
         self.conv1x1_repr = nn.Conv2d(repr_channels, num_channels, 1)
         self.conv = conv3x3(num_channels, num_channels - 1)
         self.bn = nn.BatchNorm2d(num_channels - 1, momentum=momentum)
-        self.repr_conv = conv3x3(num_channels - 1, repr_channels - 1)
+        self.repr_conv = nn.Sequential(
+            conv3x3(num_channels - 1, repr_channels - 1),
+            nn.BatchNorm2d(repr_channels - 1, momentum=momentum),
+        )
 
         self.resblocks = nn.ModuleList(
             [ResidualBlock(num_channels - 1, num_channels - 1, momentum=momentum) for _ in range(num_blocks)]
@@ -385,11 +475,18 @@ class DynamicsNetwork(nn.Module):
         x = self.bn(x)
         x = nn.functional.relu(x)
 
+        # if x.shape[0] == 256:
+        #     print('\nRecurrent Inference\n------\npre_res:', x.abs().mean().item())
         for block in self.resblocks:
             x = block(x)
         state = x
+        # if state.shape[0] == 256:
+        #     print('pre_repr_conv:', state.abs().mean().item())
         state = self.repr_conv(state)
-        disc_loss = 0
+        # if state.shape[0] == 256:
+        #     print('pre_discrete:', state.abs().mean().item())
+        #     print('------\n')
+        disc_loss = torch.zeros(x.shape[0], dtype=torch.float32, device=x.device)
         if self.discretize_type is not None:
             state, disc_loss = discretize(state, self.discretize_type, vq_model=self.vq_model)
 
@@ -615,11 +712,10 @@ class EfficientZeroNet(BaseNet):
                 assert codebook_size == repr_channels, 'codebook_size must be equal to repr_channels ' + \
                     f'({repr_channels}) for vq_one_hot'
 
-            self.vq_model = VectorQuantizerEMA(
+            self.vq_model = VectorQuantizer(
                 codebook_size,
                 repr_channels,
-                commitment_cost = vq_params.get('commitment_cost', 0.25),
-                decay = vq_params.get('decay', 0.99))
+                commitment_cost = vq_params.get('commitment_cost', 0.25))
 
         self.representation_network = RepresentationNetwork(
             observation_shape,
@@ -688,18 +784,19 @@ class EfficientZeroNet(BaseNet):
         policy, value = self.prediction_network(encoded_state)
         return policy, value
 
-    def representation(self, observation):
+    def representation(self, observation, return_loss=False):
         encoded_state, disc_loss = self.representation_network(observation)
-        if self.training:
-            self.disc_cum_loss += disc_loss
-            self.disc_loss_count += 1
         if not self.state_norm:
+            if return_loss:
+                return encoded_state, disc_loss
             return encoded_state
         else:
             encoded_state_normalized = renormalize(encoded_state)
+            if return_loss:
+                return encoded_state_normalized, disc_loss
             return encoded_state_normalized
 
-    def dynamics(self, encoded_state, reward_hidden, action):
+    def dynamics(self, encoded_state, reward_hidden, action, return_loss=False):
         # Stack encoded_state with a game specific one hot encoded action
         action_one_hot = (
             torch.ones(
@@ -719,21 +816,15 @@ class EfficientZeroNet(BaseNet):
         x = torch.cat((encoded_state, action_one_hot), dim=1)
         next_encoded_state, reward_hidden, value_prefix, disc_loss = self.dynamics_network(x, reward_hidden)
 
-        if self.training:
-            self.disc_cum_loss += disc_loss
-            self.disc_loss_count += 1
-
         if not self.state_norm:
+            if return_loss:
+                return next_encoded_state, reward_hidden, value_prefix, disc_loss
             return next_encoded_state, reward_hidden, value_prefix
         else:
             next_encoded_state_normalized = renormalize(next_encoded_state)
+            if return_loss:
+                return next_encoded_state_normalized, reward_hidden, value_prefix, disc_loss
             return next_encoded_state_normalized, reward_hidden, value_prefix
-
-    def reset_disc_losses(self):
-        mean_disc_loss = self.disc_cum_loss / self.disc_loss_count
-        self.disc_cum_loss = 0
-        self.disc_loss_count = 0
-        return mean_disc_loss
 
     def get_params_mean(self):
         representation_mean = self.representation_network.get_param_mean()

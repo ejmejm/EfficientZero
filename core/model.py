@@ -15,6 +15,14 @@ class NetworkOutput(typing.NamedTuple):
     hidden_state: List[float]
     reward_hidden: object
 
+class DiscNetworkOutput(typing.NamedTuple):
+    # output format of the model
+    value: float
+    value_prefix: float
+    policy_logits: List[float]
+    hidden_state: List[float]
+    reward_hidden: object
+    disc_loss: float
 
 def concat_output_value(output_lst):
     # concat the values of the model output list
@@ -78,10 +86,10 @@ class BaseNet(nn.Module):
     def dynamics(self, state, reward_hidden, action):
         raise NotImplementedError
 
-    def initial_inference(self, obs) -> NetworkOutput:
+    def initial_inference(self, obs, return_loss=False) -> NetworkOutput:
         num = obs.size(0)
 
-        state = self.representation(obs)
+        state, disc_loss = self.representation(obs, return_loss=True)
         actor_logit, value = self.prediction(state)
 
         if not self.training:
@@ -96,10 +104,13 @@ class BaseNet(nn.Module):
             # zero initialization for reward (value prefix) hidden states
             reward_hidden = (torch.zeros(1, num, self.lstm_hidden_size).to('cuda'), torch.zeros(1, num, self.lstm_hidden_size).to('cuda'))
 
+        if return_loss:
+            return DiscNetworkOutput(value, [0. for _ in range(num)], actor_logit, state, reward_hidden, disc_loss)
         return NetworkOutput(value, [0. for _ in range(num)], actor_logit, state, reward_hidden)
 
-    def recurrent_inference(self, hidden_state, reward_hidden, action) -> NetworkOutput:
-        state, reward_hidden, value_prefix = self.dynamics(hidden_state, reward_hidden, action)
+    def recurrent_inference(self, hidden_state, reward_hidden, action, return_loss=False) -> NetworkOutput:
+        state, reward_hidden, value_prefix, disc_loss = \
+            self.dynamics(hidden_state, reward_hidden, action, return_loss=True)
         actor_logit, value = self.prediction(state)
 
         if not self.training:
@@ -110,6 +121,8 @@ class BaseNet(nn.Module):
             reward_hidden = (reward_hidden[0].detach().cpu().numpy(), reward_hidden[1].detach().cpu().numpy())
             actor_logit = actor_logit.detach().cpu().numpy()
 
+        if return_loss:
+            return DiscNetworkOutput(value, value_prefix, actor_logit, state, reward_hidden, disc_loss)
         return NetworkOutput(value, value_prefix, actor_logit, state, reward_hidden)
 
     def get_weights(self):

@@ -18,6 +18,8 @@ from core.selfplay_worker import DataWorker
 from core.reanalyze_worker import BatchWorker_GPU, BatchWorker_CPU
 
 
+umap_model = None
+
 def consist_loss_func(f1, f2):
     """Consistency loss function: similarity loss
     Parameters
@@ -112,9 +114,23 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
 
     if config.amp_type == 'torch_amp':
         with autocast():
-            value, _, policy_logits, hidden_state, reward_hidden = model.initial_inference(obs_batch)
+            value, _, policy_logits, hidden_state, reward_hidden, disc_loss = \
+                model.initial_inference(obs_batch, return_loss=True)
     else:
-        value, _, policy_logits, hidden_state, reward_hidden = model.initial_inference(obs_batch)
+        value, _, policy_logits, hidden_state, reward_hidden, disc_loss = \
+            model.initial_inference(obs_batch, return_loss=True)
+
+    # --------------------------------------------------
+
+
+    initial_state = hidden_state.detach()
+    with autocast():
+        pre_disc_vectors = model.representation_network.get_cont_vectors(obs_batch)[:1000]
+    pre_disc_vectors = pre_disc_vectors.detach().cpu().numpy()
+
+
+     # --------------------------------------------------
+
     scaled_value = config.inverse_value_transform(value)
 
     if vis_result:
@@ -143,7 +159,8 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
         with autocast():
             for step_i in range(config.num_unroll_steps):
                 # unroll with the dynamics function
-                value, value_prefix, policy_logits, hidden_state, reward_hidden = model.recurrent_inference(hidden_state, reward_hidden, action_batch[:, step_i])
+                value, value_prefix, policy_logits, hidden_state, reward_hidden, recurrent_disc_loss = \
+                    model.recurrent_inference(hidden_state, reward_hidden, action_batch[:, step_i], return_loss=True)
 
                 beg_index = config.image_channel * step_i
                 end_index = config.image_channel * (step_i + config.stacked_observations)
@@ -163,6 +180,7 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
                 policy_loss += -(torch.log_softmax(policy_logits, dim=1) * target_policy[:, step_i + 1]).sum(1)
                 value_loss += config.scalar_value_loss(value, target_value_phi[:, step_i + 1])
                 value_prefix_loss += config.scalar_reward_loss(value_prefix, target_value_prefix_phi[:, step_i])
+                disc_loss += recurrent_disc_loss
                 # Follow MuZero, set half gradient
                 hidden_state.register_hook(lambda grad: grad * 0.5)
 
@@ -198,7 +216,8 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
     else:
         for step_i in range(config.num_unroll_steps):
             # unroll with the dynamics function
-            value, value_prefix, policy_logits, hidden_state, reward_hidden = model.recurrent_inference(hidden_state, reward_hidden, action_batch[:, step_i])
+            value, value_prefix, policy_logits, hidden_state, reward_hidden, recurrent_disc_loss = \
+                model.recurrent_inference(hidden_state, reward_hidden, action_batch[:, step_i], return_loss=True)
 
             beg_index = config.image_channel * step_i
             end_index = config.image_channel * (step_i + config.stacked_observations)
@@ -218,6 +237,7 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
             policy_loss += -(torch.log_softmax(policy_logits, dim=1) * target_policy[:, step_i + 1]).sum(1)
             value_loss += config.scalar_value_loss(value, target_value_phi[:, step_i + 1])
             value_prefix_loss += config.scalar_reward_loss(value_prefix, target_value_prefix_phi[:, step_i])
+            disc_loss += recurrent_disc_loss
             # Follow MuZero, set half gradient
             hidden_state.register_hook(lambda grad: grad * 0.5)
 
@@ -251,14 +271,59 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
                 if value_prefix_indices_0.any():
                     other_loss[key + '_0'] = metric_loss(scaled_value_prefixs_cpu[value_prefix_indices_0], target_value_prefix_base[value_prefix_indices_0])
     # ----------------------------------------------------------------------------------
-    # weighted loss with masks (some invalid states which are out of trajectory.)
+    # weighted loss with masks (some invalid states which are out of tr`ajectory.)
     loss = (config.consistency_coeff * consistency_loss + config.policy_loss_coeff * policy_loss +
-            config.value_loss_coeff * value_loss + config.reward_loss_coeff * value_prefix_loss)
-    weighted_loss = (weights * loss).mean()
+            config.value_loss_coeff * value_loss + config.reward_loss_coeff * value_prefix_loss +
+            config.discrete_loss_coeff * disc_loss)
+    # print('Discrete loss:', disc_loss.mean().item())
+    # print('Hidden state mean: {:.5f}, Initial state mean: {:.5f}, Codebook mean: {:.5f}'.format(
+    #     hidden_state.abs().mean().item(), initial_state.abs().mean().item(),
+    #     model.vq_model._embedding.weight.abs().mean().item()) if model.vq_model else 0.0)
+    
+    global umap_model
+    if False:#umap_model is None or np.random.rand() < 0.005:
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        import umap
 
-    # Add in discretization loss for when applicable
-    disc_loss = model.reset_disc_losses()
-    weighted_loss += disc_loss
+        embeds = model.vq_model._embedding.weight
+        embeds = embeds.detach().cpu().numpy()
+
+        print(embeds.shape, pre_disc_vectors.shape)
+
+        fig, ax = plt.subplots(3, 2, figsize=(16, 16))
+
+        # Make headmap of embeds
+        sns.heatmap(embeds, cmap='viridis', ax=ax[0, 0])
+        ax[0, 0].set_title('Embeddings')
+
+        if umap_model is None:
+            umap_model = umap.UMAP(n_neighbors=3,
+                        min_dist=0.1,
+                        metric='euclidean').fit(
+                            np.concatenate([pre_disc_vectors, embeds], axis=0))
+
+        proj = umap_model.transform(pre_disc_vectors)
+        sns.scatterplot(proj[:, 0], proj[:, 1], alpha=0.05, color='blue', ax=ax[1, 0])
+        
+        proj = umap_model.transform(embeds)
+        sns.scatterplot(proj[:, 0], proj[:, 1], alpha=0.5, color='red', ax=ax[1, 0])
+        ax[1, 0].set_title('UMAP')
+
+        sns.scatterplot(proj[:, 0], proj[:, 1], alpha=0.1, color='red', ax=ax[2, 0])
+        ax[2, 0].set_title('UMAP')
+
+        # pre_dist = (pre_disc_vectors**2).sum(axis=1) ** 0.5
+        # sns.displot(pre_dist, color='blue', ax=ax[0, 1])
+        # ax[0, 1].set_title('Pre Disc Distribution')
+
+        # embed_dist = (embeds**2).sum(axis=1) ** 0.5
+        # sns.displot(embed_dist, color='red', ax=ax[1, 1])
+        # ax[1, 1].set_title('Embed Distribution')
+
+        plt.show()
+
+    weighted_loss = (weights * loss).mean()
 
     # backward
     parameters = model.parameters()
@@ -290,7 +355,8 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
 
     # packing data for logging
     loss_data = (total_loss.item(), weighted_loss.item(), loss.mean().item(), 0, policy_loss.mean().item(),
-                 value_prefix_loss.mean().item(), value_loss.mean().item(), consistency_loss.mean())
+                 value_prefix_loss.mean().item(), value_loss.mean().item(), consistency_loss.mean(),
+                 disc_loss.mean().item())
     if vis_result:
         reward_w_dist, representation_mean, dynamic_mean, reward_mean = model.get_params_mean()
         other_dist['reward_weights_dist'] = reward_w_dist

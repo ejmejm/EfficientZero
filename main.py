@@ -81,6 +81,22 @@ if __name__ == '__main__':
     exp_path = game_config.set_config(args)
     exp_path, log_base_path = make_results_dir(exp_path, args)
 
+    # import matplotlib.pyplot as plt
+    # import sys
+    # env = game_config.new_game().env
+    # for _ in range(3):
+    #     print('RESET')
+    #     obs = env.reset()
+    #     print(obs.shape)
+    #     plt.imshow(obs)
+    #     plt.show()
+    #     action = 2
+    #     obs, reward, done, info = env.step(action)
+    #     print(obs.shape)
+    #     plt.imshow(obs)
+    #     plt.show()
+    # sys.exit(0)
+
     if args.wandb:
         import wandb
         wandb.init(

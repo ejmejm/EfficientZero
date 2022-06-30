@@ -1,9 +1,3 @@
-# import os
-# import sys
-# sys.path.insert(1, os.path.join(sys.path[0], '../..'))
-# from env_wrapper import AtariWrapper
-# from model import EfficientZeroNet
-
 import torch
 
 from core.config import BaseConfig
@@ -18,10 +12,10 @@ class MinigridDebugConfig(BaseConfig):
         super(MinigridDebugConfig, self).__init__(
             training_steps=30_000,
             last_steps=2000,
-            test_interval=1000,
-            log_interval=200,
+            test_interval=100,
+            log_interval=100,
             vis_interval=1000,
-            test_episodes=4,
+            test_episodes=5,
             checkpoint_interval=1000,
             target_model_interval=200,
             save_ckpt_interval=1000,
@@ -60,6 +54,7 @@ class MinigridDebugConfig(BaseConfig):
             value_loss_coeff=0.25,
             policy_loss_coeff=1,
             consistency_coeff=2,
+            discrete_loss_coeff=1,
             # reward sum
             lstm_hidden_size=64,
             lstm_horizon_len=5,
@@ -78,10 +73,13 @@ class MinigridDebugConfig(BaseConfig):
         self.bn_mt = 0.1
         self.blocks = 1  # Number of blocks in the ResNet
         self.channels = 32  # Number of channels in the ResNet
-        self.repr_shape = (6, 6)
+        self.repr_shape = (8, 8)
         self.repr_channels = 32
-        self.discretize_type = None # 'vq' # 'gumbel'
-        self.vq_params = {'codebook_size': self.repr_channels}
+        self.discretize_type = 'vq'
+        self.vq_params = {
+            'codebook_size': self.repr_channels,
+            'commitment_cost': 0.25
+        }
 
         self.reduced_channels_reward = 16  # x36 Number of channels in reward head
         self.reduced_channels_value = 16  # x36 Number of channels in value head
@@ -143,11 +141,11 @@ class MinigridDebugConfig(BaseConfig):
 
     def new_game(self, seed=None, save_video=False, save_path=None, video_callable=None, uid=None, test=False, final_test=False):
         if test:
-            env = make_minigrid(self.env_name, skip=self.frame_skip,
-                max_episode_steps=self.test_max_moves, partial_obs=False)
+            env = make_minigrid(self.env_name, skip=self.frame_skip, max_episode_steps=self.test_max_moves,
+                partial_obs=False, tile_size=8, same_seed=True)
         else:
-            env = make_minigrid(self.env_name, skip=self.frame_skip,
-                max_episode_steps=self.max_moves, partial_obs=False)
+            env = make_minigrid(self.env_name, skip=self.frame_skip, max_episode_steps=self.max_moves,
+                partial_obs=False, tile_size=8, same_seed=True)
 
         orig_size = env.observation_space.shape
         self.obs_shape = (self.image_channel * self.stacked_observations, orig_size[0], orig_size[1])
