@@ -72,7 +72,7 @@ class AtariFastConfig(BaseConfig):
         self.bn_mt = 0.1
         self.blocks = 1  # Number of blocks in the ResNet
         self.channels = 64  # Number of channels in the ResNet
-        self.repr_shape = (6, 6)
+        self.repr_shape = (8, 8)
         self.discretize_type = None
         self.repr_channels = 32
         self.discretize_type = 'vq_one_hot'
