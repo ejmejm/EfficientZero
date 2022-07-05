@@ -66,7 +66,9 @@ class MCTS(object):
                 hidden_states_c_reward = torch.from_numpy(np.asarray(hidden_states_c_reward)).to(device).unsqueeze(0)
                 hidden_states_h_reward = torch.from_numpy(np.asarray(hidden_states_h_reward)).to(device).unsqueeze(0)
 
-                last_actions = torch.from_numpy(np.asarray(last_actions)).to(device).unsqueeze(1).long()
+                last_actions = torch.from_numpy(np.asarray(last_actions)).to(device).long()
+                if self.config.image_based:
+                    last_actions = last_actions.unsqueeze(1)
 
                 # evaluation for leaf nodes
                 if self.config.amp_type == 'torch_amp':

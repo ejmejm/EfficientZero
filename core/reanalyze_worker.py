@@ -1,5 +1,6 @@
 import ray
 import time
+import traceback
 import torch
 
 import numpy as np
@@ -197,7 +198,10 @@ class BatchWorker_CPU(object):
 
         re_num = int(batch_size * ratio)
         # formalize the input observations
-        obs_lst = prepare_observation_lst(obs_lst)
+        if self.config.image_based:
+            obs_lst = prepare_observation_lst(obs_lst)
+        else:
+            obs_lst = np.array(obs_lst).reshape(len(obs_lst), -1)
 
         # formalize the inputs of a batch
         inputs_batch = [obs_lst, action_lst, mask_lst, indices_lst, weights_lst, make_time_lst]
@@ -228,39 +232,45 @@ class BatchWorker_CPU(object):
         self.mcts_storage.push(countext)
 
     def run(self):
-        # start making mcts contexts to feed the GPU batch maker
-        start = False
-        while True:
-            # wait for starting
-            if not start:
-                start = ray.get(self.storage.get_start_signal.remote())
-                time.sleep(1)
-                continue
+        try:
+            # start making mcts contexts to feed the GPU batch maker
+            start = False
+            while True:
+                # wait for starting
+                if not start:
+                    start = ray.get(self.storage.get_start_signal.remote())
+                    time.sleep(1)
+                    continue
 
-            ray_data_lst = [self.storage.get_counter.remote(), self.storage.get_target_weights.remote()]
-            trained_steps, target_weights = ray.get(ray_data_lst)
+                ray_data_lst = [self.storage.get_counter.remote(), self.storage.get_target_weights.remote()]
+                trained_steps, target_weights = ray.get(ray_data_lst)
 
-            beta = self.beta_schedule.value(trained_steps)
-            # obtain the batch context from replay buffer
-            batch_context = ray.get(self.replay_buffer.prepare_batch_context.remote(self.config.batch_size, beta))
-            # break
-            if trained_steps >= self.config.training_steps + self.config.last_steps:
-                time.sleep(30)
-                break
+                beta = self.beta_schedule.value(trained_steps)
+                # obtain the batch context from replay buffer
+                batch_context = ray.get(self.replay_buffer.prepare_batch_context.remote(self.config.batch_size, beta))
+                # break
+                if trained_steps >= self.config.training_steps + self.config.last_steps:
+                    time.sleep(30)
+                    break
 
-            new_model_index = trained_steps // self.config.target_model_interval
-            if new_model_index > self.last_model_index:
-                self.last_model_index = new_model_index
-            else:
-                target_weights = None
+                new_model_index = trained_steps // self.config.target_model_interval
+                if new_model_index > self.last_model_index:
+                    self.last_model_index = new_model_index
+                else:
+                    target_weights = None
 
-            if self.mcts_storage.get_len() < 20:
-                # Observation will be deleted if replay buffer is full. (They are stored in the ray object store)
-                try:
-                    self.make_batch(batch_context, self.config.revisit_policy_search_rate, weights=target_weights)
-                except:
-                    print('Data is deleted...')
-                    time.sleep(0.1)
+                if self.mcts_storage.get_len() < 20:
+                    # Observation will be deleted if replay buffer is full. (They are stored in the ray object store)
+                    try:
+                        self.make_batch(batch_context, self.config.revisit_policy_search_rate, weights=target_weights)
+                    except Exception as e:
+                        print('Data is deleted...')
+                        raise e
+                        time.sleep(0.1)
+        except Exception as e:
+            print('ERROR IN REANALYZE WORKER!')
+            print(traceback.format_exc())
+            raise e
 
 
 @ray.remote(num_gpus=0.125)
@@ -305,7 +315,10 @@ class BatchWorker_GPU(object):
 
         batch_values, batch_value_prefixs = [], []
         with torch.no_grad():
-            value_obs_lst = prepare_observation_lst(value_obs_lst)
+            if self.config.image_based:
+                value_obs_lst = prepare_observation_lst(value_obs_lst)
+            else:
+                value_obs_lst = np.array(value_obs_lst).reshape(len(value_obs_lst), -1)
             # split a full batch into slices of mini_infer_size: to save the GPU memory for more GPU actors
             m_batch = self.config.mini_infer_size
             slices = np.ceil(batch_size / m_batch).astype(np.int_)
@@ -313,7 +326,9 @@ class BatchWorker_GPU(object):
             for i in range(slices):
                 beg_index = m_batch * i
                 end_index = m_batch * (i + 1)
-                m_obs = torch.from_numpy(value_obs_lst[beg_index:end_index]).to(device).float() / 255.0
+                m_obs = torch.from_numpy(value_obs_lst[beg_index:end_index]).to(device).float()
+                if self.config.image_based:
+                    m_obs /= 255.0
                 if self.config.amp_type == 'torch_amp':
                     with autocast():
                         m_output = self.model.initial_inference(m_obs)
@@ -395,7 +410,10 @@ class BatchWorker_GPU(object):
         device = self.config.device
 
         with torch.no_grad():
-            policy_obs_lst = prepare_observation_lst(policy_obs_lst)
+            if self.config.image_based:
+                policy_obs_lst = prepare_observation_lst(policy_obs_lst)
+            else:
+                policy_obs_lst = np.array(policy_obs_lst).reshape(len(policy_obs_lst), -1)
             # split a full batch into slices of mini_infer_size: to save the GPU memory for more GPU actors
             m_batch = self.config.mini_infer_size
             slices = np.ceil(batch_size / m_batch).astype(np.int_)
@@ -403,8 +421,9 @@ class BatchWorker_GPU(object):
             for i in range(slices):
                 beg_index = m_batch * i
                 end_index = m_batch * (i + 1)
-
-                m_obs = torch.from_numpy(policy_obs_lst[beg_index:end_index]).to(device).float() / 255.0
+                m_obs = torch.from_numpy(policy_obs_lst[beg_index:end_index]).to(device).float()
+                if self.config.image_based:
+                    m_obs /= 255.0
                 if self.config.amp_type == 'torch_amp':
                     with autocast():
                         m_output = self.model.initial_inference(m_obs)
@@ -496,17 +515,22 @@ class BatchWorker_GPU(object):
             self.batch_storage.push([inputs_batch, targets_batch])
 
     def run(self):
-        start = False
-        while True:
-            # waiting for start signal
-            if not start:
-                start = ray.get(self.storage.get_start_signal.remote())
-                time.sleep(0.1)
-                continue
+        try:
+            start = False
+            while True:
+                # waiting for start signal
+                if not start:
+                    start = ray.get(self.storage.get_start_signal.remote())
+                    time.sleep(0.1)
+                    continue
 
-            trained_steps = ray.get(self.storage.get_counter.remote())
-            if trained_steps >= self.config.training_steps + self.config.last_steps:
-                time.sleep(30)
-                break
+                trained_steps = ray.get(self.storage.get_counter.remote())
+                if trained_steps >= self.config.training_steps + self.config.last_steps:
+                    time.sleep(30)
+                    break
 
-            self._prepare_target_gpu()
+                self._prepare_target_gpu()
+        except Exception as e:
+            print('ERROR IN REANALYZE WORKER!')
+            print(traceback.format_exc())
+            raise e

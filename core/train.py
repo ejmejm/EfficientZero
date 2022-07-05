@@ -65,9 +65,15 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
     # obs_batch is the observation for hat s_t (predicted hidden states from dynamics function)
     # obs_target_batch is the observations for s_t (hidden states from representation function)
     # to save GPU memory usage, obs_batch_ori contains (stack + unroll steps) frames
-    obs_batch_ori = torch.from_numpy(obs_batch_ori).to(config.device).float() / 255.0
-    obs_batch = obs_batch_ori[:, 0: config.stacked_observations * config.image_channel, :, :]
-    obs_target_batch = obs_batch_ori[:, config.image_channel:, :, :]
+    obs_batch_ori = torch.from_numpy(obs_batch_ori).to(config.device).float()
+    if config.image_based:
+        obs_batch_ori /= 255.0
+        obs_batch = obs_batch_ori[:, 0: config.stacked_observations * config.image_channel, :, :]
+        obs_target_batch = obs_batch_ori[:, config.image_channel:, :, :]
+    else:
+        obs_batch_ori = obs_batch_ori.reshape(obs_batch_ori.shape[0], -1, *config.obs_shape)
+        obs_batch = obs_batch_ori[:, 0]
+        obs_target_batch = obs_batch_ori[:, 1:]
 
     # do augmentations
     if config.use_augmentation:
@@ -143,7 +149,8 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
         with autocast():
             for step_i in range(config.num_unroll_steps):
                 # unroll with the dynamics function
-                value, value_prefix, policy_logits, hidden_state, reward_hidden = model.recurrent_inference(hidden_state, reward_hidden, action_batch[:, step_i])
+                value, value_prefix, policy_logits, hidden_state, reward_hidden = \
+                    model.recurrent_inference(hidden_state, reward_hidden, action_batch[:, step_i])
 
                 beg_index = config.image_channel * step_i
                 end_index = config.image_channel * (step_i + config.stacked_observations)
@@ -151,7 +158,11 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
                 # consistency loss
                 if config.consistency_coeff > 0:
                     # obtain the oracle hidden states from representation function
-                    _, _, _, presentation_state, _ = model.initial_inference(obs_target_batch[:, beg_index:end_index, :, :])
+                    if config.image_based:
+                        target = obs_target_batch[:, beg_index:end_index]
+                    else:
+                        target = obs_target_batch[:, beg_index]
+                    _, _, _, presentation_state, _ = model.initial_inference(target)
                     # no grad for the presentation_state branch
                     dynamic_proj = model.project(hidden_state, with_grad=True)
                     observation_proj = model.project(presentation_state, with_grad=False)
@@ -206,7 +217,11 @@ def update_weights(model, batch, optimizer, replay_buffer, config, scaler, vis_r
             # consistency loss
             if config.consistency_coeff > 0:
                 # obtain the oracle hidden states from representation function
-                _, _, _, presentation_state, _ = model.initial_inference(obs_target_batch[:, beg_index:end_index, :, :])
+                if config.image_based:
+                    target = obs_target_batch[:, beg_index:end_index]
+                else:
+                    target = obs_target_batch[:, beg_index]
+                _, _, _, presentation_state, _ = model.initial_inference(target)
                 # no grad for the presentation_state branch
                 dynamic_proj = model.project(hidden_state, with_grad=True)
                 observation_proj = model.project(presentation_state, with_grad=False)

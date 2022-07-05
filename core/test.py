@@ -23,7 +23,6 @@ def _test(config, shared_storage):
         if counter >= config.training_steps + config.last_steps:
             time.sleep(30)
             break
-        print('Counter stuff:', counter, config.test_interval * episodes)
         time.sleep(5)
         if counter >= config.test_interval * episodes:
             print('STARTING TEST')
@@ -111,7 +110,7 @@ def test(config, model, counter, test_episodes, device, render, save_video=False
                 stack_obs = torch.from_numpy(stack_obs).to(device).float() / 255.0
             else:
                 stack_obs = [game_history.step_obs() for game_history in game_histories]
-                stack_obs = torch.from_numpy(np.array(stack_obs)).to(device)
+                stack_obs = torch.from_numpy(np.array(stack_obs).reshape(len(stack_obs), -1)).to(device)
 
             with autocast():
                 network_output = model.initial_inference(stack_obs.float())

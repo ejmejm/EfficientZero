@@ -1,6 +1,7 @@
 import argparse
 import logging.config
 import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 import numpy as np
 import ray
@@ -45,7 +46,7 @@ if __name__ == '__main__':
                              'Also, priority for new data is calculated based on loss (default: False)')
     parser.add_argument('--use_max_priority', action='store_true', default=False, help='max priority')
     parser.add_argument('--test_episodes', type=int, default=10, help='Evaluation episode count (default: %(default)s)')
-    parser.add_argument('--use_augmentation', action='store_true', default=True, help='use augmentation')
+    parser.add_argument('--use_augmentation', action='store_true', default=False, help='use augmentation')
     parser.add_argument('--augmentation', type=str, default=['shift', 'intensity'], nargs='+',
                         choices=['none', 'rrc', 'affine', 'crop', 'blur', 'shift', 'intensity'],
                         help='Style of augmentation')

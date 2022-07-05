@@ -127,7 +127,6 @@ class DataWorker(object):
             with torch.no_grad():
                 while True:
                     trained_steps = ray.get(self.storage.get_counter.remote())
-                    print('TRAINED STEPS: {}'.format(trained_steps))
                     # training finished
                     if trained_steps >= self.config.training_steps + self.config.last_steps:
                         time.sleep(30)
@@ -271,7 +270,9 @@ class DataWorker(object):
                             stack_obs = torch.from_numpy(stack_obs).to(self.device).float() / 255.0
                         else:
                             stack_obs = [game_history.step_obs() for game_history in game_histories]
-                            stack_obs = torch.from_numpy(np.array(stack_obs)).to(self.device)
+                            # Combine stacked obs into flat obs
+                            stack_obs = np.array(stack_obs).reshape(len(stack_obs), -1)
+                            stack_obs = torch.from_numpy(stack_obs).to(self.device)
 
                         if self.config.amp_type == 'torch_amp':
                             with autocast():

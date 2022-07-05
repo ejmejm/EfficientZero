@@ -52,102 +52,14 @@ def mlp(
 
     return nn.Sequential(*layers)
 
-
-def conv3x3(in_channels, out_channels, stride=1):
-    return nn.Conv2d(
-        in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False
-    )
-
-
-# Residual block
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, downsample=None, stride=1, momentum=0.1):
-        super().__init__()
-        self.conv1 = conv3x3(in_channels, out_channels, stride)
-        self.bn1 = nn.BatchNorm2d(out_channels, momentum=momentum)
-        self.conv2 = conv3x3(out_channels, out_channels)
-        self.bn2 = nn.BatchNorm2d(out_channels, momentum=momentum)
-        self.downsample = downsample
-
-    def forward(self, x):
-        identity = x
-
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = nn.functional.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-
-        if self.downsample is not None:
-            identity = self.downsample(x)
-
-        out += identity
-        out = nn.functional.relu(out)
-        return out
-
-
-# Downsample observations before representation network (See paper appendix Network Architecture)
-class DownSample(nn.Module):
-    def __init__(self, in_channels, out_channels, out_shape, momentum=0.1):
-        super().__init__()
-        self.conv1 = nn.Conv2d(
-            in_channels,
-            out_channels // 2,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            bias=False,
-        )
-        self.bn1 = nn.BatchNorm2d(out_channels // 2, momentum=momentum)
-        self.resblocks1 = nn.ModuleList(
-            [ResidualBlock(out_channels // 2, out_channels // 2, momentum=momentum) for _ in range(1)]
-        )
-        self.conv2 = nn.Conv2d(
-            out_channels // 2,
-            out_channels,
-            kernel_size=3,
-            stride=2,
-            padding=1,
-            bias=False,
-        )
-        self.downsample_block = ResidualBlock(out_channels // 2, out_channels, momentum=momentum, stride=2, downsample=self.conv2)
-        self.resblocks2 = nn.ModuleList(
-            [ResidualBlock(out_channels, out_channels, momentum=momentum) for _ in range(1)]
-        )
-        self.pooling1 = nn.AvgPool2d(kernel_size=3, stride=2, padding=1)
-        self.resblocks3 = nn.ModuleList(
-            [ResidualBlock(out_channels, out_channels, momentum=momentum) for _ in range(1)]
-        )
-        self.pooling2 = nn.AdaptiveAvgPool2d(out_shape)
-
-    def forward(self, x):
-        x = self.conv1(x)
-        x = self.bn1(x)
-        x = nn.functional.relu(x)
-        for block in self.resblocks1:
-            x = block(x)
-        x = self.downsample_block(x)
-        for block in self.resblocks2:
-            x = block(x)
-        x = self.pooling1(x)
-        for block in self.resblocks3:
-            x = block(x)
-        x = self.pooling2(x)
-        return x
-
-
 # Encode the observations into hidden states
 class RepresentationNetwork(nn.Module):
     def __init__(
         self,
-        observation_shape,
-        num_blocks,
-        num_channels,
-        out_shape,
-        downsample,
-        momentum=0.1,
-        discretize_type=None,
+        observation_size,
+        out_size=128,
+        layer_sizes=[256, 256, 256],
+        momentum=0.1
     ):
         """Representation network
         Parameters
@@ -162,38 +74,10 @@ class RepresentationNetwork(nn.Module):
             True -> do downsampling for observations. (For board games, do not need)
         """
         super().__init__()
-        self.discretize_type = discretize_type
-        self.downsample = downsample
-        if self.downsample:
-            self.downsample_net = DownSample(
-                observation_shape[0],
-                num_channels,
-                out_shape,
-            )
-        self.conv = conv3x3(
-            observation_shape[0],
-            num_channels,
-        )
-        self.bn = nn.BatchNorm2d(num_channels, momentum=momentum)
-        self.resblocks = nn.ModuleList(
-            [ResidualBlock(num_channels, num_channels, momentum=momentum) for _ in range(num_blocks)]
-        )
+        self.layers = mlp(observation_size, layer_sizes, out_size, momentum=momentum)
 
     def forward(self, x):
-        if self.downsample:
-            x = self.downsample_net(x)
-        else:
-            x = self.conv(x)
-            x = self.bn(x)
-            x = nn.functional.relu(x)
-
-        for block in self.resblocks:
-            x = block(x)
-        if self.discretize_type == 'gumbel':
-            x = F.gumbel_softmax(x, hard=True, dim=1)
-        elif self.discretize_type == 'vq':
-            raise NotImplementedError
-        return x
+        return self.layers(x)
 
     def get_param_mean(self):
         mean = []
@@ -206,17 +90,13 @@ class RepresentationNetwork(nn.Module):
 class DynamicsNetwork(nn.Module):
     def __init__(
         self,
-        num_blocks,
-        num_channels,
-        reduced_channels_reward,
-        fc_reward_layers,
+        input_size,
         full_support_size,
-        block_output_size_reward,
+        base_layers=[128, 128, 128],
+        fc_reward_layers=[64, 64],
         lstm_hidden_size=64,
         momentum=0.1,
         init_zero=False,
-        discretize_type=None,
-        add_1d_conv=False,
     ):
         """Dynamics network
         Parameters
@@ -237,54 +117,18 @@ class DynamicsNetwork(nn.Module):
             True -> zero initialization for the last layer of reward mlp
         """
         super().__init__()
-        self.num_channels = num_channels
         self.lstm_hidden_size = lstm_hidden_size
-        self.discretize_type = discretize_type
-        self.add_1d_conv = add_1d_conv
 
-        if self.add_1d_conv:
-            self.conv1x1_repr = nn.Conv2d(num_channels, num_channels, 1)
-        self.conv = conv3x3(num_channels, num_channels - 1)
-        self.bn = nn.BatchNorm2d(num_channels - 1, momentum=momentum)
-        self.resblocks = nn.ModuleList(
-            [ResidualBlock(num_channels - 1, num_channels - 1, momentum=momentum) for _ in range(num_blocks)]
-        )
-
-        self.reward_resblocks = nn.ModuleList(
-            [ResidualBlock(num_channels - 1, num_channels - 1, momentum=momentum) for _ in range(num_blocks)]
-        )
-
-        self.conv1x1_reward = nn.Conv2d(num_channels - 1, reduced_channels_reward, 1)
-        self.bn_reward = nn.BatchNorm2d(reduced_channels_reward, momentum=momentum)
-        self.block_output_size_reward = block_output_size_reward
-        self.lstm = nn.LSTM(input_size=self.block_output_size_reward, hidden_size=self.lstm_hidden_size)
+        self.base_layers = mlp(input_size, base_layers[:-1], base_layers[-1])
+        self.lstm = nn.LSTM(input_size=base_layers[-1], hidden_size=self.lstm_hidden_size)
         self.bn_value_prefix = nn.BatchNorm1d(self.lstm_hidden_size, momentum=momentum)
         self.fc = mlp(self.lstm_hidden_size, fc_reward_layers, full_support_size, init_zero=init_zero, momentum=momentum)
 
     def forward(self, x, reward_hidden):
-        state = x[:,:-1,:,:]
-        if self.add_1d_conv:
-            x = self.conv1x1_repr(x)
-        x = self.conv(x)
-        x = self.bn(x)
-
-        x += state
-        x = nn.functional.relu(x)
-
-        for block in self.resblocks:
-            x = block(x)
+        x = self.base_layers(x)
         state = x
-        if self.discretize_type == 'gumbel':
-            state = F.gumbel_softmax(state, hard=True, dim=1)
-        elif self.discretize_type == 'vq':
-            raise NotImplementedError
 
-        x = self.conv1x1_reward(x)
-        x = self.bn_reward(x)
-        x = nn.functional.relu(x)
-
-        x = x.reshape(-1, self.block_output_size_reward).unsqueeze(0)
-        value_prefix, reward_hidden = self.lstm(x, reward_hidden)
+        value_prefix, reward_hidden = self.lstm(x.unsqueeze(0), reward_hidden)
         value_prefix = value_prefix.squeeze(0)
         value_prefix = self.bn_value_prefix(value_prefix)
         value_prefix = nn.functional.relu(value_prefix)
@@ -293,41 +137,33 @@ class DynamicsNetwork(nn.Module):
         return state, reward_hidden, value_prefix
 
     def get_dynamic_mean(self):
-        dynamic_mean = np.abs(self.conv.weight.detach().cpu().numpy().reshape(-1)).tolist()
-
-        for block in self.resblocks:
-            for name, param in block.named_parameters():
-                dynamic_mean += np.abs(param.detach().cpu().numpy().reshape(-1)).tolist()
+        dynamic_mean = [0]
+        for name, param in self.base_layers.named_parameters():
+            dynamic_mean += np.abs(param.detach().cpu().numpy().reshape(-1)).tolist()
         dynamic_mean = sum(dynamic_mean) / len(dynamic_mean)
         return dynamic_mean
 
     def get_reward_mean(self):
-        reward_w_dist = self.conv1x1_reward.weight.detach().cpu().numpy().reshape(-1)
-
         for name, param in self.fc.named_parameters():
             temp_weights = param.detach().cpu().numpy().reshape(-1)
-            reward_w_dist = np.concatenate((reward_w_dist, temp_weights))
-        reward_mean = np.abs(reward_w_dist).mean()
-        return reward_w_dist, reward_mean
+        reward_mean = np.abs(temp_weights).mean()
+        return temp_weights, reward_mean
 
 
 # predict the value and policy given hidden states
 class PredictionNetwork(nn.Module):
     def __init__(
         self,
+        input_size,
         action_space_size,
-        num_blocks,
-        num_channels,
-        reduced_channels_value,
-        reduced_channels_policy,
-        fc_value_layers,
-        fc_policy_layers,
         full_support_size,
-        block_output_size_value,
-        block_output_size_policy,
+        base_layers=[128, 128],
+        value_linear=64,
+        policy_linear=64,
+        fc_value_layers=[64, 64],
+        fc_policy_layers=[64, 64],
         momentum=0.1,
         init_zero=False,
-        add_1d_conv=False,
     ):
         """Prediction network
         Parameters
@@ -356,70 +192,58 @@ class PredictionNetwork(nn.Module):
             True -> zero initialization for the last layer of value/policy mlp
         """
         super().__init__()
-        self.add_1d_conv = add_1d_conv
-        self.resblocks = nn.ModuleList(
-            [ResidualBlock(num_channels, num_channels, momentum=momentum) for _ in range(num_blocks)]
-        )
+        self.base_layers = mlp(input_size, base_layers[:-1], base_layers[-1])
+        
+        self.value_linear = nn.Linear(base_layers[-1], value_linear)
+        self.policy_linear = nn.Linear(base_layers[-1], policy_linear)
+        self.bn_value = nn.BatchNorm1d(value_linear, momentum=momentum)
+        self.bn_policy = nn.BatchNorm1d(policy_linear, momentum=momentum)
 
-        if self.add_1d_conv:
-            self.conv1x1_repr = nn.Conv2d(num_channels, num_channels, 1)
-        self.conv1x1_value = nn.Conv2d(num_channels, reduced_channels_value, 1)
-        self.conv1x1_policy = nn.Conv2d(num_channels, reduced_channels_policy, 1)
-        self.bn_value = nn.BatchNorm2d(reduced_channels_value, momentum=momentum)
-        self.bn_policy = nn.BatchNorm2d(reduced_channels_policy, momentum=momentum)
-        self.block_output_size_value = block_output_size_value
-        self.block_output_size_policy = block_output_size_policy
-        self.fc_value = mlp(self.block_output_size_value, fc_value_layers, full_support_size, init_zero=init_zero, momentum=momentum)
-        self.fc_policy = mlp(self.block_output_size_policy, fc_policy_layers, action_space_size, init_zero=init_zero, momentum=momentum)
+        self.fc_value = mlp(value_linear, fc_value_layers, full_support_size, init_zero=init_zero, momentum=momentum)
+        self.fc_policy = mlp(policy_linear, fc_policy_layers, action_space_size, init_zero=init_zero, momentum=momentum)
 
     def forward(self, x):
-        if self.add_1d_conv:
-            x = self.conv1x1_repr(x)
-        for block in self.resblocks:
-            x = block(x)
-        value = self.conv1x1_value(x)
+        x = self.base_layers(x)
+
+        value = self.value_linear(x)
         value = self.bn_value(value)
         value = nn.functional.relu(value)
+        value = self.fc_value(value)
 
-        policy = self.conv1x1_policy(x)
+        policy = self.policy_linear(x)
         policy = self.bn_policy(policy)
         policy = nn.functional.relu(policy)
-
-        value = value.reshape(-1, self.block_output_size_value)
-        policy = policy.reshape(-1, self.block_output_size_policy)
-        value = self.fc_value(value)
         policy = self.fc_policy(policy)
+
         return policy, value
 
 
 class EfficientZeroNet(BaseNet):
     def __init__(
         self,
-        observation_shape,
+        observation_size,
         action_space_size,
-        num_blocks,
-        num_channels,
-        out_shape,
-        reduced_channels_reward,
-        reduced_channels_value,
-        reduced_channels_policy,
-        fc_reward_layers,
-        fc_value_layers,
-        fc_policy_layers,
         reward_support_size,
         value_support_size,
-        downsample,
         inverse_value_transform,
         inverse_reward_transform,
-        lstm_hidden_size,
+        repr_size=128,
+        repr_layer_sizes=[256, 256, 256],
+        dynamics_layer_sizes=[128, 128, 128],
+        prediction_layer_sizes=[128, 128],
+        fc_reward_layers=[64, 64],
+        value_linear=64,
+        policy_linear=64,
+        fc_value_layers=[64, 64],
+        fc_policy_layers=[64, 64],
         bn_mt=0.1,
+        lstm_hidden_size=64,
         proj_hid=256,
         proj_out=256,
         pred_hid=64,
         pred_out=256,
         init_zero=False,
         state_norm=False,
-        discretize_type=None,
     ):
         """EfficientZero network
         Parameters
@@ -478,61 +302,39 @@ class EfficientZeroNet(BaseNet):
         self.pred_out = pred_out
         self.init_zero = init_zero
         self.state_norm = state_norm
-
         self.action_space_size = action_space_size
-        block_output_size_reward = (np.prod([reduced_channels_reward, *out_shape])
-            if downsample
-            else (reduced_channels_reward * observation_shape[1] * observation_shape[2]))
-
-        block_output_size_value = (np.prod([reduced_channels_value, *out_shape])
-            if downsample
-            else (reduced_channels_value * observation_shape[1] * observation_shape[2]))
-
-        block_output_size_policy = (np.prod([reduced_channels_policy, *out_shape])
-            if downsample
-            else (reduced_channels_policy * observation_shape[1] * observation_shape[2]))
 
         self.representation_network = RepresentationNetwork(
-            observation_shape,
-            num_blocks,
-            num_channels,
-            out_shape,
-            downsample,
+            observation_size,
+            repr_size,
+            repr_layer_sizes,
             momentum=bn_mt,
-            discretize_type=discretize_type,
         )
 
         self.dynamics_network = DynamicsNetwork(
-            num_blocks,
-            num_channels + 1,
-            reduced_channels_reward,
-            fc_reward_layers,
+            repr_size + action_space_size,
             reward_support_size,
-            block_output_size_reward,
+            base_layers=dynamics_layer_sizes,
+            fc_reward_layers=fc_reward_layers,
             lstm_hidden_size=lstm_hidden_size,
             momentum=bn_mt,
-            init_zero=self.init_zero,
-            discretize_type=discretize_type,
-        )
+            init_zero=self.init_zero,)
 
         self.prediction_network = PredictionNetwork(
+            repr_size,
             action_space_size,
-            num_blocks,
-            num_channels,
-            reduced_channels_value,
-            reduced_channels_policy,
-            fc_value_layers,
-            fc_policy_layers,
             value_support_size,
-            block_output_size_value,
-            block_output_size_policy,
+            base_layers=prediction_layer_sizes,
+            value_linear=value_linear,
+            policy_linear=policy_linear,
+            fc_value_layers=fc_value_layers,
+            fc_policy_layers=fc_policy_layers,
             momentum=bn_mt,
             init_zero=self.init_zero,
         )
 
         # projection
-        in_dim = np.prod([num_channels, *out_shape])
-        self.projection_in_dim = in_dim
+        self.projection_in_dim = repr_size
         self.projection = nn.Sequential(
             nn.Linear(self.projection_in_dim, self.proj_hid),
             nn.BatchNorm1d(self.proj_hid),
@@ -563,22 +365,7 @@ class EfficientZeroNet(BaseNet):
             return encoded_state_normalized
 
     def dynamics(self, encoded_state, reward_hidden, action):
-        # Stack encoded_state with a game specific one hot encoded action
-        action_one_hot = (
-            torch.ones(
-                (
-                    encoded_state.shape[0],
-                    1,
-                    encoded_state.shape[2],
-                    encoded_state.shape[3],
-                )
-            )
-            .to(action.device)
-            .float()
-        )
-        action_one_hot = (
-            action[:, :, None, None] * action_one_hot / self.action_space_size
-        )
+        action_one_hot = F.one_hot(action.squeeze(), num_classes=self.action_space_size).float()
         x = torch.cat((encoded_state, action_one_hot), dim=1)
         next_encoded_state, reward_hidden, value_prefix = self.dynamics_network(x, reward_hidden)
 
