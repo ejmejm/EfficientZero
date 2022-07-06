@@ -4,7 +4,7 @@ import torch
 
 from core.config import BaseConfig
 from gym_minigrid.wrappers import *
-from .general.dense_model import EfficientZeroNet
+from ..general.dense_model import EfficientZeroNet
 
 
 class FlatMinigridConfig(BaseConfig):
@@ -74,7 +74,7 @@ class FlatMinigridConfig(BaseConfig):
         self.use_augmentation = False
         # representation network
         self.repr_size = 128
-        self.repr_layer_sizes = [256, 256]
+        self.repr_layer_sizes = [256, 128]
         # dynamics network
         self.dynamics_layer_sizes = [128, 128]
         self.fc_reward_layers = [64, 64]
@@ -133,7 +133,7 @@ class FlatMinigridConfig(BaseConfig):
     def new_game(self, seed=None, save_video=False, save_path=None, video_callable=None, uid=None, test=False, final_test=False):
         #'MiniGrid-Empty-5x5-v0'
         env = gym.make(self.env_name)
-        env = OneHotPartialObsWrapper(env, tile_size=2)
+        env = RGBImgPartialObsWrapper(env, tile_size=8)
         env = FlatObsWrapper(env)
         # env = ImgObsWrapper(env)
 

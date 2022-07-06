@@ -4,7 +4,7 @@ import torch
 
 from core.config import BaseConfig
 from gym_minigrid.wrappers import *
-from .general.dense_model import EfficientZeroNet
+from ..general.dense_model import EfficientZeroNet
 
 
 class FlatMinigridConfig(BaseConfig):
@@ -74,7 +74,7 @@ class FlatMinigridConfig(BaseConfig):
         self.use_augmentation = False
         # representation network
         self.repr_size = 128
-        self.repr_layer_sizes = [256, 256]
+        self.repr_layer_sizes = [256, 128]
         # dynamics network
         self.dynamics_layer_sizes = [128, 128]
         self.fc_reward_layers = [64, 64]
